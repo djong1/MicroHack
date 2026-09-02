@@ -1040,6 +1040,83 @@ rad env show
 
 Kubernetes context and Radius workspace are independent selectors.
 
+### The deployment reported a failure that already succeeded
+
+`rad deploy` can fail on a container that is actually healthy:
+
+```text
+"code": "Internal",
+"message": "Container state is 'Waiting' Reason: CrashLoopBackOff, Message: back-off
+5m0s restarting failed container=backend pod=backend-757d95b986-dbhw7"
+```
+
+or:
+
+```text
+"message": "deployment timed out, name: backend, namespace env-azure-prod-adaptive-apps,
+error occurred while fetching latest status: client rate limiter Wait returned an error:
+context deadline exceeded"
+```
+
+Radius polls the pods that already exist. When an earlier attempt left a pod crash-looping,
+Kubernetes has backed that pod off by up to five minutes, so it does not restart promptly
+even though the new specification is correct. Radius reads that stale status and gives up
+while the replacement ReplicaSet is still rolling out.
+
+**The tell-tale is the pod name.** If the hash in the error matches a pod from the previous
+attempt rather than a newly created one, the status is stale. Check what is actually
+running:
+
+```bash
+kubectl get pods --namespace "$APP_NAMESPACE"
+kubectl get replicasets --namespace "$APP_NAMESPACE"
+```
+
+If a new pod is `1/1 Running`, the deployment succeeded and the error is a reporting
+artifact; continue with the walkthrough. Otherwise simply run `rad deploy` again — the
+back-off window has usually expired by then. Deleting the crash-looping pod first also
+clears it.
+
+### The cluster or the database stopped between sessions
+
+Both Azure back ends can be stopped to save cost, and each fails in its own way. A stopped
+AKS cluster stops resolving its API server name, so every `rad` and `kubectl` command
+fails before it reaches Radius:
+
+```text
+Error: Get "https://<cluster>.hcp.<region>.azmk8s.io:443/apis/api.ucp.dev/v1alpha3":
+dial tcp: lookup <cluster>.hcp.<region>.azmk8s.io: no such host
+```
+
+A stopped PostgreSQL Flexible Server instead surfaces as an opaque Azure error nested
+inside the recipe deployment:
+
+```text
+"code": "RecipeDeploymentFailed",
+"message": "failed to deploy recipe default of type Radius.Resources/postgreSqlDatabases"
+...
+"code": "InternalServerError",
+"message": "An unexpected error occured while processing the request. Tracking ID: ..."
+```
+
+Neither is a defect in the application model. Start whichever is stopped and retry:
+
+```bash
+az aks show --resource-group "$RESOURCE_GROUP" --name "<cluster>" --query powerState.code -o tsv
+az aks start --resource-group "$RESOURCE_GROUP" --name "<cluster>"
+
+az postgres flexible-server show --resource-group "$RESOURCE_GROUP" \
+  --name "<server>" --query state -o tsv
+az postgres flexible-server start --resource-group "$RESOURCE_GROUP" --name "<server>"
+```
+
+If DNS still fails after the cluster is running, refresh the kubeconfig — a stale context
+can point at a cluster that no longer exists:
+
+```bash
+az aks get-credentials --resource-group "$RESOURCE_GROUP" --name "<cluster>" --overwrite-existing
+```
+
 ### K3s reports connection refused on localhost
 
 The devcontainer restart stopped the tunnel process. Reconnect, then restore the
@@ -1072,6 +1149,9 @@ never inspects. No amount of platform work fixes that from the outside — a use
 managed identity, federated credentials, topic spaces, permission bindings, and Event
 Grid data-plane role assignments would all be correct and the broker would still refuse
 the connection.
+
+This is tracked upstream as
+[microsoft/adaptive-apps#44](https://github.com/microsoft/adaptive-apps/issues/44).
 
 The failure is not graceful. `MqttOrderListener` calls `SubscribeAsync` on an
 unconnected client, which throws `MqttClientNotConnectedException`. .NET's default
