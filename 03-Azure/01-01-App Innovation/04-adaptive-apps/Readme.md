@@ -1,10 +1,12 @@
 # **Adaptive Apps MicroHack**
 
 - [MicroHack introduction](#microhack-introduction)
+- [What this MicroHack builds on](#what-this-microhack-builds-on)
 - [MicroHack context](#microhack-context)
 - [Who is this MicroHack for?](#who-is-this-microhack-for)
 - [Objectives](#objectives)
 - [MicroHack challenges](#microhack-challenges)
+- [Additional documentation](#additional-documentation)
 - [Contributors](#contributors)
 
 ## MicroHack introduction
@@ -13,6 +15,11 @@ Modern organizations increasingly need to run the same application in very
 different places: a public cloud region, an on-premises datacenter, an edge
 location, or a fully disconnected site. They need to do this without rebuilding
 the application for every environment.
+
+This MicroHack is built on top of the Microsoft
+[**Adaptive Apps**](https://github.com/microsoft/adaptive-apps) project - *build
+once, adapt everywhere* - and uses its **Simplified Trading App** as the running
+example throughout every challenge.
 
 This MicroHack uses [Radius](https://radapp.io), an open-source, cloud-native
 application platform, to make a single application adaptive. The application
@@ -36,25 +43,36 @@ flowchart TB
 Across the challenges, you work through the full lifecycle of such an
 application. You prepare target platforms, install Radius, define reusable
 platform abstractions with resource types and recipes, and prove portability by
-deploying a sample stock-trading application across multiple environments
-without changing its application model. Advanced challenges apply the same
-approach to identity, AI services, the developer inner loop, and brownfield
-modernization.
+deploying the Simplified Trading App across multiple environments without
+changing its application model. Advanced challenges apply the same approach to
+identity, AI services, the developer inner loop, and brownfield modernization.
 
-This MicroHack is not a complete explanation of Radius. The following articles
-provide useful background:
+## What this MicroHack builds on
 
-- [What is Radius?](https://docs.radapp.io/concepts/overview/)
-- [Radius application model](https://docs.radapp.io/guides/author-apps/application/overview/)
-- [Radius environments](https://docs.radapp.io/guides/deploy-apps/environments/overview/)
-- [Radius recipes](https://docs.radapp.io/guides/recipes/overview/)
+This MicroHack does not invent a new stack. It is a hands-on path through the
+Microsoft Adaptive Apps project, and it consumes that project's assets directly.
+
+| Building block | Where it comes from | How the MicroHack uses it |
+| --- | --- | --- |
+| **Adaptive Apps** | [microsoft/adaptive-apps](https://github.com/microsoft/adaptive-apps) | The reference architecture, capability portfolios, resource types, and recipes that the challenges install and extend. |
+| **Simplified Trading App** | [`src/` in microsoft/adaptive-apps](https://github.com/microsoft/adaptive-apps/tree/main/src) | The example application used in every challenge: a Node.js frontend, a C# backend with MQTT order processing, a C# AI agent, an MQTT broker, and PostgreSQL. |
+| **Resource types and recipes** | [`radius/` in microsoft/adaptive-apps](https://github.com/microsoft/adaptive-apps/tree/main/radius) | The `Radius.*` capability contracts imported in Challenge 03 and implemented in Challenge 04. |
+| **Container images and recipe artifacts** | `ghcr.io/microsoft/adaptive-apps` | The published trading app images and recipe packages deployed from Challenge 05 onward. |
+| **Radius** | [radapp.io](https://radapp.io) | The application platform behind the whole approach. |
+
+Because the trading app is the same in every challenge, any difference you see
+between environments comes from the platform, never from the application code.
+
+This MicroHack is not a complete explanation of Adaptive Apps or Radius. See
+[Additional documentation](#additional-documentation) for background reading.
 
 ## MicroHack context
 
-The scenario follows a trading firm whose stock-trading application must run
-across cloud, on-premises, and edge environments. Some sites may need to keep
-operating when disconnected from the cloud, while connected sites should use
-managed Azure services where appropriate.
+The scenario follows a trading firm whose stock-trading application - the
+Simplified Trading App from the Adaptive Apps project - must run across cloud,
+on-premises, and edge environments. Some sites may need to keep operating when
+disconnected from the cloud, while connected sites should use managed Azure
+services where appropriate.
 
 Instead of maintaining a different deployment definition for every site, the
 platform team wants one application definition with environment-specific
@@ -242,6 +260,31 @@ application.
 
 - [Challenge 09 - Model, review, and deploy with Radius Canvas](challenges/challenge-09.md)
 - [Challenge 10 - Modernize a brownfield application](challenges/challenge-10.md)
+
+## Additional documentation
+
+**Adaptive Apps**
+
+- [Build portable applications with adaptive apps](https://learn.microsoft.com/azure/architecture/solution-ideas/articles/adaptive-apps)
+  - Azure Architecture Center
+- [microsoft/adaptive-apps repository](https://github.com/microsoft/adaptive-apps)
+- [Adaptive Apps getting started tutorial](https://github.com/microsoft/adaptive-apps/tree/main/tutorials/getting-started)
+- [Capability portfolios overview](https://github.com/microsoft/adaptive-apps/blob/main/docs/portfolios/overview.md)
+- [Simplified Trading App source](https://github.com/microsoft/adaptive-apps/tree/main/src)
+
+**Radius**
+
+- [What is Radius?](https://docs.radapp.io/concepts/overview/)
+- [Radius application model](https://docs.radapp.io/guides/author-apps/application/overview/)
+- [Radius environments](https://docs.radapp.io/guides/deploy-apps/environments/overview/)
+- [Radius recipes](https://docs.radapp.io/guides/recipes/overview/)
+- [Introducing Radius Canvas](https://techcommunity.microsoft.com/blog/azuredevcommunityblog/introducing-radius-canvas-visualize-review-and-deploy-applications-in-the-github/4549760)
+
+**Supporting technologies**
+
+- [Dapr](https://dapr.io/) - the portable programming model used by Adaptive Apps
+- [Azure Arc-enabled Kubernetes](https://learn.microsoft.com/azure/azure-arc/kubernetes/overview)
+- [Azure Local](https://learn.microsoft.com/azure/azure-local/)
 
 ## Contributors
 
