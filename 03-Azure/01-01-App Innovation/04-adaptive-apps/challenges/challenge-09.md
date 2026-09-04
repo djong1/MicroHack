@@ -2,7 +2,7 @@
 
 [< Previous Challenge](challenge-08.md) - **[Home](../Readme.md)** - [Next Challenge >](challenge-10.md)
 
-Estimated time: 75-120 minutes | Difficulty: intermediate to advanced
+Estimated time: 90-150 minutes | Difficulty: intermediate to advanced
 
 ## Challenge objective
 
@@ -27,6 +27,13 @@ which parts it does not.
 > The point of this challenge is judgement, not clicking. A generated model that looks
 > plausible is not the same as a correct portability boundary. Treat every node in the
 > graph as a claim you have to verify against the source and against Challenges 03-08.
+
+> [!NOTE]
+> Radius Canvas is a public preview under active development. View labels, generated file
+> names, recipe pack contents, and menu wording will change. Record what you observe,
+> together with the plugin version shown in the Copilot app, rather than matching a
+> screenshot. Several tasks below expect you to find that something does not resolve; that
+> is a finding to document, not a failure to work around.
 
 ## Scenario
 
@@ -155,17 +162,23 @@ database and broker connections.
 
 ### Task 2: Reconcile the generated model with the hand-authored model
 
-Build a mapping table between `.radius/app.bicep` and the `iac/app.bicep` you deployed in
-Challenge 05. Cover at least the frontend, the backend, the AI agent, the database, the
-message broker, workload identity, secrets, and ingress.
+Build a mapping table between `.radius/app.bicep` and the model you deployed in
+Challenge 05. The Challenge 05 model is `iac/app.bicep`; if you completed Challenge 08,
+include `iac/ai.bicep`, which is where the AI capability is declared. Cover at least the
+frontend, the backend, the AI agent, the database, the message broker, workload identity,
+secrets, and ingress.
 
 For each row, record the Canvas resource type, the Challenge 05 resource type, and whether
 they express the same intent.
 
 Then answer:
 
-- Which Canvas types are predefined `Radius.*` types, and which Challenge 03 contracts have
-  no predefined equivalent?
+- Which Canvas types are predefined `Radius.*` types, and which of the Challenge 03
+  contracts *that the trading application actually uses* have no predefined equivalent?
+- Where the modeler had to invent a type because no predefined type matched, compare the
+  generated type with the Challenge 03 contract for the same capability. Do they have the
+  same name, the same inputs, and the same outputs? Would a recipe written for one satisfy
+  the other?
 - Which Challenge 05-08 capabilities does the generated model not contain? For each one,
   decide whether the modeler had no evidence in the source, or whether it deliberately
   declined to infer the resource.
@@ -181,6 +194,9 @@ Create a credential profile for your Azure tenant and subscription, verify it, t
 a Radius environment that connects your GitHub repository to that subscription. Select the
 lab resource group, the `aks-adaptive-apps` cluster, and the `trading-canvas` namespace.
 
+Take an inventory of the lab resource group's Azure resources before you start this task.
+Task 4 needs it, and so does the last question below.
+
 Once the environment reports ready, account for everything it created:
 
 - The GitHub Environment, and the Actions variables it holds. Confirm no long-lived cloud
@@ -195,15 +211,24 @@ Now open the Planned view and review the deployment without deploying it. For ea
 resource, record the resolved recipe and the infrastructure the plan says will be
 provisioned.
 
+Record explicitly any resource for which the plan resolves **no** recipe. A recipe pack
+only implements the types it knows about, so a capability the modeler had to invent a type
+for has nothing behind it. That row is the most valuable one in your table, and Task 4
+depends on it.
+
 Then answer:
 
 - Which Azure service does the plan resolve for the trading database, and where does that
   recipe come from?
 - How does that compare with `iac/recipes/postgres-azure-flex.bicep`, which you authored,
-  published, and registered yourself in Challenge 04?
+  published, and registered yourself in Challenge 04? Compare the contract inputs and
+  outputs, who initializes the schema, how TLS and network access are handled, and who owns
+  the credential.
 - Challenge 04 taught that an environment decides how a requirement is met. Point to the
   exact place in this flow where that decision is made.
-- Verify the claim that reviewing a plan does not create or change cloud resources.
+- Verify the claim that reviewing a plan does not create or change cloud resources. Compare
+  a snapshot of resource IDs and their provisioning state before and after, not just a
+  count.
 
 ### Task 4: Deploy through the generated workflow
 
@@ -211,13 +236,22 @@ Deploy the application from the Planned view. Before the run gets far, read the 
 files that were committed to your repository, because from this point they are part of
 your codebase.
 
+> [!NOTE]
+> If Task 3 showed a resource with no resolved recipe, expect the deployment to fail on
+> that resource. That is the designed outcome of this task, not an error to route around.
+> Capture the failure, identify the resource and the missing implementation, and continue.
+> If you want a running application as well, deploy a reduced model with the unresolvable
+> capability removed, and record exactly what you removed and what the application loses
+> without it.
+
 Watch the Deployed view, then open the workflow run and reconstruct what it did. Account
 for at least: the OIDC login to Azure, how the run obtained credentials for the target
 cluster, the ephemeral Radius control plane it created, the credential registration, the
 state restore and save around the deployment, the environment and recipe pack it deployed,
 and the point at which the application itself was deployed.
 
-Reach the running application, then produce a comparison with Challenge 05:
+Reach the running application if the deployment succeeded, then produce a comparison with
+Challenge 05:
 
 | Question | Challenge 05 | Challenge 09 |
 | --- | --- | --- |
@@ -229,8 +263,15 @@ Reach the running application, then produce a comparison with Challenge 05:
 | What is the unit of promotion? | | |
 
 Finally, prove isolation. Confirm the Canvas deployment landed in `trading-canvas`, that
-the Challenge 05 application is still healthy in its own namespace, and that the
-Challenge 05 Radius control plane does not list the Canvas application.
+the Challenge 05 application is still healthy in its own namespace and still serves
+traffic, and that the Challenge 05 Radius control plane does not list the Canvas
+application. Because both paths share one Azure resource group, also compare an inventory
+of Azure resource IDs taken before Task 3 with one taken now, and account for every
+difference.
+
+Run the Radius control-plane checks from the devcontainer, where your `ws-azure-prod`
+workspace is configured. The Canvas extension uses its own private `rad` binary and knows
+nothing about that workspace.
 
 ### Task 5: Review an architectural change in the Diff view
 
@@ -248,11 +289,24 @@ as the base and your branch as the head.
   difference between previewing the branch you have checked out and previewing another
   branch.
 
-Then answer the review question honestly: which classes of regression does this diff
-catch, and which real, dangerous changes would it show as `unchanged`? Consider a changed
-environment variable, a changed image tag, a changed database query, a removed readiness
-probe, and a widened network exposure. Decide whether this belongs in your review process
-as a required gate or as an aid, and justify the choice.
+Then answer the review question honestly. The diff compares two application *models*, so
+sort your test cases into three groups rather than two:
+
+- Changes that alter the shape of the model: a new component, a new backing service, a new
+  connection, a changed resource type.
+- Changes to a property the model does carry, such as an environment variable value, an
+  image reference, or a readiness probe. The diff can flag the resource as modified, but
+  ask yourself what it tells a reviewer about whether the change is safe.
+- Changes the model does not carry at all: a changed database query, a changed business
+  rule, a dependency bumped inside a container, or an environment-level setting such as
+  route exposure that lives in the deployment environment rather than in either branch.
+
+Work out which group each of these falls into, and test at least one of them rather than
+reasoning about it: a changed environment variable, a changed image tag, a changed database
+query, a removed readiness probe, and a widened network exposure.
+
+Decide whether this belongs in your review process as a required gate or as an aid, and
+justify the choice using the third group.
 
 ### Task 6: Judge the portability claim
 
@@ -281,24 +335,35 @@ Cover:
 
 - The trading application is modeled from source into `.radius/app.bicep`, and every node
   in the Modeled view is traced back to real evidence in the repository.
-- A completed mapping table compares the generated model with `iac/app.bicep`, and the
-  team can explain every difference as either missing evidence, deliberate conservatism,
-  or a contract that has no predefined equivalent.
+- A completed mapping table compares the generated model with the Challenge 05 model, and
+  the team can explain every difference as either missing evidence, deliberate
+  conservatism, or a contract that has no predefined equivalent. Where the modeler invented
+  a type, the team can say whether it is interchangeable with the Challenge 03 contract for
+  the same capability.
 - A Radius environment exists that authenticates to Azure through OIDC, with a federated
   credential scoped to the repository and environment, and with no long-lived cloud
   credential stored in the repository.
 - The Planned view is used to identify the resolved recipe and planned infrastructure for
-  each resource, and the team can name where that recipe pack comes from.
-- The application is deployed to the `trading-canvas` namespace through the generated
-  workflow, is reachable, and the team can narrate what the workflow run actually did.
-- The Challenge 05 deployment and its Radius control plane are demonstrably untouched.
+  each resource, the team can name where that recipe pack comes from, and any resource with
+  no resolved recipe is identified.
+- Either the application is deployed to the `trading-canvas` namespace through the generated
+  workflow and is reachable, or the team documents exactly which resource could not be
+  resolved by the environment's recipe pack and what a platform team would have to supply.
+  In both cases the team can narrate what the workflow run actually did.
+- The Challenge 05 deployment is still serving traffic, its Radius control plane does not
+  list the Canvas application, and every new Azure resource in the shared resource group is
+  accounted for.
 - A Diff view review is produced for a real architectural change and posted as a Markdown
-  summary on a pull request, together with an explicit list of what the diff cannot catch.
+  summary on a pull request, together with the three-way classification of what the diff
+  reports, what it reports without judging, and what it does not see at all.
 - The portability assessment distinguishes the Azure PaaS on-ramp from the non-Azure port,
   and correctly attributes non-Azure portability to resource types, recipes, and
   environments rather than to the canvas.
-- No subscription ID, tenant ID, client ID, token, password, or kubeconfig appears in
-  committed source or in evidence.
+- No new secret value is introduced, and no subscription ID, tenant ID, client ID, token,
+  or kubeconfig is added to committed source or to evidence. The generated
+  `.radius/app.bicep` is checked for credential values copied out of development
+  configuration such as `src/docker-compose.yml`, and any found are replaced before
+  deployment.
 - The environment and deployment are cleaned up, or their remaining cost and scope are
   documented deliberately.
 

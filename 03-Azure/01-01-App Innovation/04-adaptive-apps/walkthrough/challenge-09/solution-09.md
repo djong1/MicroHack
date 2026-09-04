@@ -2,7 +2,7 @@
 
 [< Previous Challenge](../../challenges/challenge-08.md) - **[Home](../../Readme.md)** - [Next Challenge >](../../challenges/challenge-10.md)
 
-Duration: 75-120 minutes
+Duration: 90-150 minutes
 
 ## Coach notes
 
@@ -59,6 +59,36 @@ and `kubectl` on the host and that `kubectl` reaches `aks-adaptive-apps`.
 
 Have every team fork the trading application source and work on a branch. Nothing in this
 challenge should be pushed to `microsoft/adaptive-apps`.
+
+Shell note: every command in this walkthrough is written to run unchanged in Bash and in
+PowerShell 7, so there are no dual code blocks. The Radius control-plane commands in
+Stage 4 are the exception to the host rule and belong in the devcontainer.
+
+### Pre-staging, and why the timing needs it
+
+The duration above assumes the coach has pre-staged the slow and permission-dependent
+parts. Without that, teams routinely lose an hour before they model anything. Run the whole
+path yourself once on the day's plugin version and record your own timings.
+
+Before the session, confirm for each team:
+
+| Item | Why it blocks |
+| --- | --- |
+| The Copilot app is installed on the host and the `radius` plugin installs cleanly | Everything |
+| The fork exists, with Actions enabled and workflow permissions allowing commits | Environment creation commits workflow files |
+| `gh auth status` shows `read:packages`, `write:packages`, and `workflow` | Package and workflow operations fail late and confusingly |
+| Permission to create an Entra app registration and a federated credential | Environment creation |
+| Whether the fork's default branch is protected | Decides whether verification opens a pull request that must be merged |
+| Azure roles on the lab resource group for the deploy identity | The workflow fails at provisioning, minutes in |
+| Whether the modeler is likely to emit an AI resource, and whether the subscription has quota for it | An unexpected AI resource can fail on quota |
+
+Record the plugin version and the upstream application commit each cohort used. This
+walkthrough's expected outputs are observations from a preview build, not a specification.
+When something differs, the observation is the correct answer and this document is stale.
+
+Two natural stopping points if a session runs long: finish after Stage 3 and treat the plan
+review as the deliverable, or skip the code change in Stage 5 and diff an existing branch.
+Stage 6 is the one stage that should never be cut, because it is the learning.
 
 ## Fixed target map
 
@@ -138,6 +168,22 @@ Two absences are the most useful part of the exercise, and both are correct beha
   `rad resource expose`, so the two models agree here for different reasons.
 - **No workload identity.** There is no predefined type for it. See Stage 2.
 
+### Scan the generated model before going further
+
+The upstream repository's `src/docker-compose.yml` carries development values such as a
+database password and a placeholder secret, because it is a local development file. The
+modeler reads compose files as evidence, so check what ended up in the generated model:
+
+```bash
+git diff --cached -- .radius/
+```
+
+Any credential value copied out of development configuration must be replaced before
+deployment, and must not be committed. This is not a hypothetical: it is the most likely
+way a team leaks something real in this challenge, because the value looks like it was
+already in the repository so nobody looks twice. The success criterion is that no *new* or
+deployable secret is introduced, not that the upstream repository is clean.
+
 ## Stage 2: Reconcile the two models
 
 This is the analytical core of the challenge. The generated model is authored against a
@@ -150,30 +196,45 @@ because that allow-list does not cover everything a real platform needs.
 | --- | --- | --- | --- |
 | Application | `Radius.Core/applications` | `Applications.Core/applications` | Yes; the newer namespace |
 | Frontend, backend, AI agent | `Radius.Compute/containers` | `Applications.Core/containers` | Yes |
-| Container builds | `Radius.Compute/containerImages` built from each Dockerfile | None; Challenge 05 consumes published `ghcr.io/microsoft/adaptive-apps` images | **No.** Canvas builds from source; Challenge 05 deploys an immutable published tag |
+| Container builds | `Radius.Compute/containerImages` built from each Dockerfile | None; Challenge 05 consumes published `ghcr.io/microsoft/adaptive-apps` images | **No.** Canvas builds from source at a pinned commit; Challenge 05 deploys a published tag, which defaults to the mutable `latest` |
 | Trading database | `Radius.Data/postgreSqlDatabases` | `Radius.Resources/postgreSqlDatabases` | Same intent, different owner of the contract |
 | Message broker | No predefined MQTT type exists. The allow-list offers `Radius.Messaging/kafka` and `Radius.Messaging/rabbitMQ`; an unmatched need becomes a generated custom type under `Radius.Resources` | `Radius.Resources/mqttBrokers` | **No predefined equivalent** |
 | Workload identity | No predefined type | `Radius.Resources/workloadIdentities` | **No predefined equivalent** |
-| AI model | `Radius.AI/models` if the source shows a model endpoint | `Radius.Resources/aiModels` (Challenge 08) | Similar intent, different contract |
+| AI model | `Radius.AI/models` if the source shows a model endpoint | `Radius.Resources/aiModels`, declared in `iac/ai.bicep` (Challenge 08), not in `iac/app.bicep` | Similar intent, different contract |
 | Secrets | `Radius.Security/secrets` | Recipe-created Kubernetes Secret bound by `secretRef` | Different mechanism |
 | Ingress | `Radius.Compute/routes`, only with explicit evidence | None; `rad resource expose` | Both decline to declare it |
 
+> [!NOTE]
+> The AI row compares against `iac/ai.bicep`. Challenge 05's `iac/app.bicep` deliberately
+> keeps AI disabled. A team that skipped Challenge 08 should record the row as out of scope
+> rather than inventing a comparison.
+
 ### Model answers
 
-**Which Challenge 03 contracts have no predefined equivalent?**
+**Which of the contracts this application uses have no predefined equivalent?**
 `mqttBrokers` and `workloadIdentities`. This is the headline finding. The trading
 application's MQTT broker and its Entra workload identity are exactly the capabilities the
 firm's platform team had to define itself, and they are exactly the two the generated model
-cannot express with a predefined type. When the modeler has an unmatched need it generates
-a custom type under the `Radius.Resources` namespace, which is the same namespace the team
-used in Challenge 03 — arriving there from the other direction.
+cannot express with a predefined type. Scope the question to the contracts the trading
+application actually uses; the wider Challenge 03 catalog has further gaps, and listing
+them all is an optional extension rather than the point.
+
+**Is the generated custom type interchangeable with the Challenge 03 contract?**
+Almost certainly not, and this is where teams over-conclude. When the modeler has an
+unmatched need it generates a custom type under the `Radius.Resources` namespace, which is
+the same namespace the team used in Challenge 03 — arriving there from the other direction.
+A shared namespace is not a shared contract. The generated type will have its own name,
+inputs, and outputs, derived from what the source appeared to need, and the Challenge 04
+recipes were written against the team's schema. A recipe written for one does not implement
+the other, and the ephemeral control plane cannot see the Challenge 04 registrations in any
+case. Push teams to state this as a schema-compatibility problem, not a naming coincidence.
 
 **Which capabilities are missing, and why?**
 
 | Missing | Reason |
 | --- | --- |
 | Ingress / route | Deliberate conservatism; no explicit external-client evidence |
-| Workload identity | No predefined type, and identity is not visible as a dependency in source |
+| Workload identity | No predefined type. The source does show credential use, since the backend and AI agent use `DefaultAzureCredential`, but that evidence does not determine the hosting identity mechanism, which is a platform decision |
 | OIDC sign-in configuration (Challenge 06) | Configuration, not structure; it is parameters on a container, not a modeled resource |
 | Service-mesh authorization (Challenge 07) | A platform policy concern that does not appear in application source at all |
 | MQTT authentication method | A property of the broker recipe, which is why Challenge 05 read it from the resource rather than hard-coding it |
@@ -186,10 +247,13 @@ challenge the model. It is metadata only and does not affect deployment.
 **Contract versus observation.**
 `iac/app.bicep` is written against contracts the platform team controls, so it is a
 statement about what the application is allowed to ask for. `.radius/app.bicep` is a
-statement about what the source appears to need. The first survives a move to a platform
-the modeler has never seen, because the contract is the thing the new platform implements.
-The second has to be re-derived, and can only use types someone has already predefined.
-This distinction is the answer to Task 6 and is worth landing hard.
+statement about what the source appears to need. Both files are committed artifacts, and
+either can be redeployed as-is wherever the types and recipes it references exist. The
+difference is governance, not regeneration: the first names contracts a platform team has
+committed to implementing on every target, so making a new platform work means writing a
+recipe. The second names types chosen by a modeler from a predefined list, so making a new
+platform work means someone must first have predefined those types for it. This distinction
+is the answer to Task 6 and is worth landing hard.
 
 ## Stage 3: Environment, OIDC trust, and the plan
 
@@ -225,7 +289,12 @@ exposure setting that defaults to private.
 
 Make the point explicitly: these are Actions **variables**, not secrets. The verification
 workflow reads only variables. Nothing here is a credential, because the credential is
-minted per run by OIDC.
+minted per run by OIDC. Have teams confirm the negative rather than assume it:
+
+```bash
+gh secret list --repo <owner>/<repo>
+gh secret list --env <environment-name> --repo <owner>/<repo>
+```
 
 Inspect the federated credential:
 
@@ -236,9 +305,24 @@ az ad app federated-credential list --id <object-id> \
 ```
 
 The subject is exactly `repo:<owner>/<repo>:environment:<environment-name>` and the
-audience is `api://AzureADTokenExchange`. Ask the team what happens if a fork, a different
-branch, or a different environment name tries to use it. The answer — nothing, the token
-does not match the subject — is the reason this is safer than a stored secret.
+audience is `api://AzureADTokenExchange`.
+
+Be precise about what this does and does not protect, because it is easy to overstate:
+
+| Attempt | Result |
+| --- | --- |
+| A fork, or any other repository, requests a token | Fails; the subject does not match |
+| A workflow that does not name this GitHub environment | Fails; the subject does not match |
+| A different environment in the same repository | Fails; the subject does not match |
+| **A different branch in the same repository targeting this environment** | **Succeeds.** The subject contains no branch |
+
+That last row is the important one. The subject binds a repository and an environment, not
+a branch. Anyone who can run a workflow against that GitHub environment gets the same
+subject. Branch restriction is a separate control: GitHub Environment deployment-branch
+rules and required reviewers. Ask the team where they would set that, and note that a
+default branch with no protection plus an unrestricted environment is a weaker boundary
+than it looks. What OIDC removes is the stored, exfiltratable, long-lived credential — a
+real and large improvement — not the need to control who can deploy.
 
 ### Review the plan
 
@@ -255,28 +339,49 @@ deployment on this environment reads as backed by AKS.
 - The database resolves to an Azure managed PostgreSQL offering through the `azure-avm`
   pack, built on Azure Verified Modules. Teams should recognise the shape from Challenge 04,
   where they used an Azure Verified Module themselves.
-- Compared with `iac/recipes/postgres-azure-flex.bicep`: functionally similar, but the team
-  authored, published to their own registry, and registered that recipe against
-  `env-azure-prod`. Here the recipe pack is fetched from an upstream repository and applied
-  by the environment created by the extension. Ownership moved; the mechanism did not.
+- Compared with `iac/recipes/postgres-azure-flex.bicep`, do not let teams stop at
+  "functionally similar". Both provision a managed PostgreSQL, but the workshop recipe also
+  owns schema initialization and the `Demo Account` seed that Challenge 05 verified, names
+  its credentials Secret in a way `iac/app.bicep` binds to by name, and sets the TLS and
+  network behaviour the backend depends on. An upstream pack recipe makes its own choices
+  about all of those. The real difference is ownership and the contract surface, not the
+  Azure service. Ask what would break in Challenge 05's validation if you swapped one recipe
+  for the other.
 - The decision point is the environment. In Challenge 04 it was `rad recipe register`
   against `env-azure-prod`. Here it is the recipe pack the workflow deploys alongside a
   `Radius.Core/environments` resource. Both are "the environment decides how a requirement
   is met".
-- Reviewing a plan provisions nothing. Verify with a resource listing before and after:
+- **Expect at least one resource with no resolved recipe.** A pack implements the types it
+  knows about. Any type the modeler had to invent, which for this application is most likely
+  the message broker, has no entry in `azure-avm`. Custom-type recipes are supplied by
+  recipe packs at deploy time; the resolver does not fabricate them. Teams should find this
+  in the Planned view before they find it in a failed run.
+- Reviewing a plan provisions nothing. Verify by comparing resource identities and
+  provisioning state, not a count, because equal counts do not detect an update or a
+  replacement:
 
 ```bash
-az resource list --resource-group <lab-rg> --query "length(@)"
+az resource list --resource-group <lab-rg> \
+  --query "sort_by([].{name:name,type:type,id:id,state:provisioningState}, &id)" -o json > before.json
 ```
 
-The count must be unchanged after reviewing the plan.
+Take this snapshot before opening the Planned view and again afterwards. The two files must
+be identical.
 
 ## Stage 4: Deploy and compare with Challenge 05
 
 Select **Deploy Application** in the Planned view. The canvas commits the workflow files
-and dispatches the run, then opens the Deployments view with live status. Node badges show
-progress, success, and failure; deployment-state styling overrides diff colouring while a
-run is in flight.
+and dispatches the run, then opens the Deployments view with live status.
+
+> [!IMPORTANT]
+> If Stage 3 identified a resource with no resolved recipe, the run is expected to fail on
+> that resource. Do not treat this as a broken lab. It is the sharpest evidence in the whole
+> challenge: the application declares a capability, and the environment has no
+> implementation for it, which is precisely the `RecipeNotFoundFailure` lesson from
+> Challenges 04 and 05 arriving from a different direction. Coach teams to capture the
+> failure, name the resource and the missing implementation, and then decide whether to
+> deploy a reduced model to also see a running application. Both outcomes satisfy the
+> success criteria; only an unexamined failure does not.
 
 Have participants read the committed workflows before discussing them:
 
@@ -331,19 +436,41 @@ to a cluster-internal service, so nothing is exposed publicly by default.
 
 ### Prove isolation
 
+On the **host**:
+
 ```bash
 kubectl get all -n trading-canvas
 kubectl get all -n <challenge-05-namespace>
+```
 
+The Radius control-plane check belongs in the **devcontainer**, where `ws-azure-prod` is
+configured. The Canvas extension uses its own private `rad` binary and never touches that
+workspace, so there is no host `rad` to run this with:
+
+```bash
 rad workspace switch ws-azure-prod
 rad group switch rg-trading
 rad app list
 ```
 
 The Challenge 05 control plane must still list `adaptive-apps` and must not list the Canvas
-application. Two Radius control planes are now driving the same cluster from different
-namespaces, which is a good moment to ask what would happen if both owned the same
-namespace. They would fight; that is why the challenge fixes a separate namespace.
+application. Also confirm the Challenge 05 application still serves traffic rather than
+merely having running pods, using the same exposure and `/api/accounts` check from
+Challenge 05.
+
+Because both paths share one Azure resource group, namespace separation is not sufficient
+proof on its own. Compare an inventory taken before Stage 3 with one taken now:
+
+```bash
+az resource list --resource-group <lab-rg> \
+  --query "sort_by([].{name:name,type:type,id:id}, &id)" -o json > after.json
+```
+
+Every difference must be attributable to the Canvas environment or deployment. Two Radius
+control planes are now driving the same cluster from different namespaces, which is a good
+moment to ask what would happen if both owned the same namespace. They would fight; that is
+why the challenge fixes a separate namespace. Ask the same question about the shared
+resource group, where the answer depends on resource naming rather than on isolation.
 
 ## Stage 5: The Diff view as a review artifact
 
@@ -365,24 +492,34 @@ Branch semantics matter and are commonly misunderstood:
 
 Generate the Markdown summary and post it on a pull request.
 
-### Model answer: what the diff cannot catch
+### Model answer: what the diff does and does not tell a reviewer
 
-The diff compares application models, so it catches structural change: added or removed
-components, added or removed backing services, changed resource types, and changed
-connections. It shows as `unchanged` anything that does not alter the model, including:
+The diff compares two application *models*. The useful framing is three-way, not two-way,
+and teams that produce a two-way answer have usually got it wrong.
 
-| Change | Diff result | Real risk |
+| Change | Diff result | What it tells a reviewer |
 | --- | --- | --- |
-| A changed environment variable value | Unchanged or a property-level modification only | High; Challenge 06 turned on OIDC entirely through parameters |
-| A changed image tag | Unchanged structure | High; different code, identical shape |
-| A changed SQL query or business rule | Unchanged | High |
-| A removed readiness probe | Unchanged structure | High; Challenge 05 relied on that probe to prove database access |
-| Widened network exposure at the environment level | Unchanged | High; exposure is an environment variable, not part of the app model |
+| Component, backing service, or connection added or removed | Added or removed | The architecture changed, and where |
+| Resource type swapped, for example PostgreSQL to MongoDB | Modified or added and removed | Exactly the case the announcement highlights |
+| A modeled property changed: an environment variable value, an image reference, a probe | Modified, when the property is part of the model | That the resource changed. **Nothing about whether the change is safe** |
+| A changed SQL query or business rule | Unchanged | Nothing. The model does not carry application logic |
+| A dependency bumped inside a container | Unchanged | Nothing, unless it introduces a new backing service the modeler detects |
+| Route exposure widened at the environment level | Not compared at all | Nothing. It is a deployment environment setting, not part of either branch's model |
+
+Two distinct blind spots, and teams should name both:
+
+1. **Reported but not judged.** Challenge 06 turned OIDC sign-in on entirely through
+   parameters. A diff can show that container properties changed; it cannot tell you the
+   application's authentication posture changed. A removed readiness probe is the same
+   shape of problem, and Challenge 05 relied on that probe to prove database access.
+2. **Not visible at all.** Application logic, and anything that lives in the environment
+   rather than the model. This second category is the one that matters for the gate
+   question, because no amount of care in review can catch what is not being compared.
 
 Correct conclusion: it is an excellent review aid and a poor gate. It tells a reviewer
 where to look, which is exactly the problem the blog post describes for large
-agent-generated changes. It does not tell them the change is safe, and a team that treats
-a grey graph as approval has replaced review with reassurance.
+agent-generated changes. It does not tell them the change is safe, and a team that treats a
+grey graph as approval has replaced review with reassurance.
 
 ## Stage 6: Model assessment of the portability claim
 
@@ -489,15 +626,22 @@ resources by hand and losing the audit trail.
 ## Evidence checklist
 
 - `.radius/app.bicep`, the origin record, and the Modeled view inventory with source
-  references verified.
-- The completed model mapping table, including the two contracts with no predefined
-  equivalent.
-- GitHub environment variables listing, showing no stored cloud credential.
-- The federated credential subject and audience, with values redacted as agreed.
-- Planned-view recipe resolution per resource, and the unchanged Azure resource count
-  before and after planning.
+  references verified, plus the credential scan of the generated model.
+- The completed model mapping table, including the contracts with no predefined equivalent
+  and a judgement on whether the generated custom type is interchangeable with the
+  Challenge 03 contract for the same capability.
+- GitHub environment variables listing plus an empty secrets listing at both repository and
+  environment scope.
+- The federated credential subject and audience, with values redacted as agreed, and the
+  three-way statement of what that subject does and does not restrict.
+- Planned-view recipe resolution per resource, including any resource with no resolved
+  recipe, and identical Azure resource snapshots before and after planning.
 - The workflow run, the ten reconstructed steps, and the Challenge 05 comparison table.
-- Namespace isolation output from both namespaces, and `rad app list` on `ws-azure-prod`.
-- The Diff view Markdown summary on a pull request, plus the list of changes it cannot
-  catch.
+  Where the run failed on an unresolvable resource, the captured failure and the statement
+  of what a platform team would have to supply.
+- Namespace isolation output from both namespaces, a Challenge 05 application health check
+  rather than a pod listing alone, `rad app list` on `ws-azure-prod` from the devcontainer,
+  and the accounted-for Azure resource-group diff.
+- The Diff view Markdown summary on a pull request, plus the three-way classification of
+  reported, reported-but-not-judged, and not-compared changes.
 - The written portability assessment.
