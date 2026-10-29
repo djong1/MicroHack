@@ -6,9 +6,8 @@ Duration: 30-45 minutes per environment
 
 ## Coach notes
 
-**Hosted Console:** source `artifacts/console-env.sh` and use the supplied
-resource names. Install Radius below, selecting **Option A: managed identity**
-for Azure workload identity.
+**Hosted Console:** use the supplied resource names. Install Radius below,
+selecting **Option A: managed identity** for Azure workload identity.
 
 - The goal is to install, configure, and explore Radius on both default platforms.
 - The default uses a **federated model**: one control plane on AKS and one on K3s.
@@ -17,14 +16,19 @@ for Azure workload identity.
 - Radius startup can take 5-10 minutes. Inspect pod state before rerunning commands.
 - Always compare `kubectl config current-context` with the active Radius workspace.
 
-Before any K3s work after a devcontainer restart, restore the private API tunnel:
+## Connect to the lab resources
+
+Complete the [Challenge 03 connection setup](../../challenges/challenge-03.md#connect-to-the-lab-resources)
+once before either manual tutorial. It retrieves both clusters' credentials,
+refreshes stale K3s credentials, and exports the shared variables via
+`artifacts/lab-env.sh`. Do not repeat subscription/resource-group setup in each step.
+In each new Bash terminal:
 
 ```bash
-export AZURE_SUBSCRIPTION="${AZURE_SUBSCRIPTION:-<subscription-id>}"
-bash resources/prepare-k3s-azure-vm.sh connect
-export KUBECONFIG="$HOME/.kube/adaptive-apps-k3s.yaml"
+source artifacts/lab-env.sh
 ```
 
+After a devcontainer restart, also rerun `bash resources/connect-lab.sh`.
 The tunnel exposes only the Kubernetes API on localhost. Radius dashboard access still
 uses `kubectl port-forward` through that API connection.
 
@@ -132,7 +136,7 @@ Workstation rad configuration
 
 ```bash
 unset KUBECONFIG
-kubectl config use-context aks-adaptive-apps
+kubectl config use-context "$AKS_CONTEXT"
 kubectl config current-context
 kubectl get nodes
 kubectl get namespace radius-system --ignore-not-found
@@ -140,17 +144,12 @@ kubectl get namespace radius-system --ignore-not-found
 
 ### 2. Prepare Azure workload identity
 
-Hosted participants first source `artifacts/console-env.sh`; the defaults below
-preserve those supplied values. BYOS participants set their own subscription and
-resource group. Do not replace a Console resource group with `rg-adaptive-apps`.
+The connection setup has already selected the subscription and exported the lab
+resource names. Retrieve the identity settings from that AKS cluster:
 
 ```bash
-export AZURE_SUBSCRIPTION="${AZURE_SUBSCRIPTION:-<subscription-id>}"
-export RESOURCE_GROUP="${RESOURCE_GROUP:-rg-adaptive-apps}"
-export AKS_CLUSTER="${AKS_CLUSTER:-aks-adaptive-apps}"
 export RADIUS_APP_NAME="${AKS_CLUSTER}-radius-app"
 
-az account set --subscription "$AZURE_SUBSCRIPTION"
 export OIDC_ISSUER="$(az aks show \
   --resource-group "$RESOURCE_GROUP" \
   --name "$AKS_CLUSTER" \
@@ -171,10 +170,6 @@ in the role assignment below avoids a Microsoft Graph lookup.
 
 ```bash
 export RADIUS_MANAGED_IDENTITY_NAME="${AKS_CLUSTER}-radius"
-export AZURE_LOCATION="$(az aks show \
-  --resource-group "$RESOURCE_GROUP" \
-  --name "$AKS_CLUSTER" --query location --output tsv)"
-
 az identity create \
   --resource-group "$RESOURCE_GROUP" \
   --name "$RADIUS_MANAGED_IDENTITY_NAME" \
@@ -264,7 +259,7 @@ az role assignment create \
 
 ```bash
 rad install kubernetes \
-  --kubecontext aks-adaptive-apps \
+  --kubecontext "$AKS_CONTEXT" \
   --set global.azureWorkloadIdentity.enabled=true
 ```
 
@@ -281,7 +276,7 @@ Then rerun the installation.
 
 ```bash
 rad workspace create kubernetes ws-azure-prod \
-  --context aks-adaptive-apps \
+  --context "$AKS_CONTEXT" \
   --force
 rad workspace switch ws-azure-prod
 
@@ -306,10 +301,8 @@ rad credential register azure wi \
 ### 1. Select and verify K3s
 
 ```bash
-export AZURE_SUBSCRIPTION="${AZURE_SUBSCRIPTION:-<subscription-id>}"
-bash resources/prepare-k3s-azure-vm.sh connect
-export KUBECONFIG="$HOME/.kube/adaptive-apps-k3s.yaml"
-kubectl config use-context k3s-azure-vm
+export KUBECONFIG="$K3S_KUBECONFIG"
+kubectl config use-context "$K3S_CONTEXT"
 kubectl config current-context
 kubectl get nodes
 kubectl get namespace radius-system --ignore-not-found
@@ -318,14 +311,14 @@ kubectl get namespace radius-system --ignore-not-found
 ### 2. Install Radius on K3s
 
 ```bash
-rad install kubernetes --kubecontext k3s-azure-vm
+rad install kubernetes --kubecontext "$K3S_CONTEXT"
 ```
 
 ### 3. Create the K3s workspace and scopes
 
 ```bash
 rad workspace create kubernetes ws-local-prod \
-  --context k3s-azure-vm \
+  --context "$K3S_CONTEXT" \
   --force
 rad workspace switch ws-local-prod
 

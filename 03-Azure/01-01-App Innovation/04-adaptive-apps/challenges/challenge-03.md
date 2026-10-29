@@ -6,9 +6,8 @@ Estimated time: 30-45 minutes per environment | Difficulty: intermediate
 
 ## Challenge objective
 
-**Hosted Console:** source `artifacts/console-env.sh` from your lab directory
-and use the supplied resource names. Complete the installation below using the
-**managed identity** option.
+**Hosted Console:** use the supplied resource names and the **managed identity**
+option for the installation below.
 
 Install and explore independent Radius control planes on both default platforms.
 Configure the matching local CLI workspaces, Radius environments, and groups:
@@ -30,16 +29,33 @@ control plane and can operate independently.
 - Configure Azure workload identity for the AKS Radius control plane.
 - Validate Radius through Kubernetes, the CLI, and the dashboard.
 
-Before the first K3s command, re-establish the private API tunnel if the devcontainer
-was reopened or rebuilt. Hosted participants rerun `bash resources/connect-console.sh`
-and source `artifacts/console-env.sh`, then select the dedicated K3s kubeconfig.
-The following subscription placeholder is for the bring-your-own-subscription path:
+## Connect to the lab resources
+
+Run once in **Bash from the Adaptive Apps lab directory**, after `az login`.
+Use your assigned values (not provisioning commands); Hosted Console participants
+can source `artifacts/console-env.sh` instead of the two exports.
 
 ```bash
-export AZURE_SUBSCRIPTION="${AZURE_SUBSCRIPTION:-<subscription-id>}"
-bash resources/prepare-k3s-azure-vm.sh connect
-export KUBECONFIG="$HOME/.kube/adaptive-apps-k3s.yaml"
+export AZURE_SUBSCRIPTION="<subscription-id>"
+export RESOURCE_GROUP="<lab-resource-group>"
+bash resources/connect-lab.sh && source artifacts/lab-env.sh
 ```
+
+The helper connects AKS, refreshes K3s credentials, opens the private Bastion API
+tunnel, and checks both clusters without provisioning or installing Radius.
+It requires AKS credential access, VM Run Command/start, and Bastion tunnel permissions.
+For nondefault names, export `AKS_CLUSTER`, `K3S_VM_NAME`, and `BASTION_NAME` first.
+If resources are missing or access is denied, stop and contact the facilitator.
+Do not disable TLS verification.
+
+Variables are now set for the remaining steps. In a new terminal, source
+`artifacts/lab-env.sh`; after a devcontainer restart, also rerun the helper.
+Switch platforms explicitly:
+
+| Target | Bash commands |
+| --- | --- |
+| AKS (selected initially) | `unset KUBECONFIG; kubectl config use-context "$AKS_CONTEXT"` |
+| K3s | `export KUBECONFIG="$K3S_KUBECONFIG"; kubectl config use-context "$K3S_CONTEXT"` |
 
 ## Tasks
 
@@ -60,7 +76,7 @@ governance trade-offs.
 
 Before installation:
 
-1. Select kube context `aks-adaptive-apps`.
+1. Select AKS using the connection table above.
 2. **Hosted:** create a user-assigned managed identity in the supplied lab resource
    group. **Bring your own subscription:** use that same path, or create a Microsoft
    Entra application and service principal if you have tenant permissions.
@@ -88,8 +104,8 @@ app registration or service-principal creation command is required.
 
 ### Task 3: Install Radius manually on K3s
 
-Select the dedicated K3s kubeconfig and context `k3s-azure-vm`, then install a second,
-independent Radius control plane.
+Switch to K3s using the connection table above, then install a second, independent
+Radius control plane.
 
 Create and select:
 
