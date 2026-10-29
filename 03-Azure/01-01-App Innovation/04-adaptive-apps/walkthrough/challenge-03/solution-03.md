@@ -16,10 +16,11 @@ selecting **Option A: managed identity** for Azure workload identity.
 - Radius startup can take 5-10 minutes. Inspect pod state before rerunning commands.
 - Always compare `kubectl config current-context` with the active Radius workspace.
 
-## Connect to the lab resources
+## Tutorial: Connect to the lab resources
 
-Complete the [Challenge 03 connection setup](../../challenges/challenge-03.md#connect-to-the-lab-resources)
-once before either manual tutorial. It retrieves both clusters' credentials,
+### 1. Initiate the connection from your dev container
+
+Complete the [Challenge 03 connection setup](../../challenges/challenge-03.md#connect-to-the-lab-resources). It retrieves both clusters' credentials,
 refreshes stale K3s credentials, and exports the shared variables via
 `artifacts/lab-env.sh`. Do not repeat subscription/resource-group setup in each step.
 In each new Bash terminal:
@@ -414,12 +415,24 @@ bash resources/deploy-radius-aks.sh
 
 ### K3s
 
+Use the shared connection setup above. Run this on each participant's workstation:
+workspaces and their default selections are local CLI configuration, not cluster objects.
+
 ```bash
-export AZURE_SUBSCRIPTION="${AZURE_SUBSCRIPTION:-<subscription-id>}"
-bash resources/prepare-k3s-azure-vm.sh connect
-export KUBECONFIG="$HOME/.kube/adaptive-apps-k3s.yaml"
-kubectl config use-context k3s-azure-vm
+source artifacts/lab-env.sh
+export KUBECONFIG="$K3S_KUBECONFIG"
+kubectl config use-context "$K3S_CONTEXT"
 
 # Run from the Adaptive Apps MicroHack root.
 bash resources/deploy-radius-k3s.sh
 ```
+
+The script waits for Radius readiness before configuring scopes. It creates any
+missing `ws-local-prod`, `rg-trading`, and `env-local-prod`, selects them, and checks
+the workspace's K3s context and the environment's `env-local-prod` namespace with
+no Azure provider. Existing environments (including later recipe configuration)
+are preserved; incompatible settings or failed queries stop setup with an error.
+An existing Radius installation is retained by default; `RADIUS_REINSTALL=true`
+explicitly opts into reinstalling it.
+
+The remaining manual activities are dashboard exploration and the team discussion.

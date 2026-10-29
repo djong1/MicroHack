@@ -176,6 +176,14 @@ recover the exercise, these scripts perform the same setup:
 - `resources/deploy-radius-aks.sh`
 - `resources/deploy-radius-k3s.sh`
 
+For K3s recovery, switch to K3s using the connection table above, then run
+`bash resources/deploy-radius-k3s.sh` on **each participant's workstation**.
+It preserves an existing Radius installation, creates missing workspace/group/environment
+configuration, and validates the selected context, group, environment, and namespace.
+Conflicting existing environment settings fail explicitly rather than being overwritten.
+Use `RADIUS_REINSTALL=true` only for an intentional, team-coordinated reinstall.
+Dashboard exploration and the team discussion remain manual.
+
 For hosted AKS recovery, first source `artifacts/console-env.sh`, unset `KUBECONFIG`,
 and select `aks-adaptive-apps`, then explicitly run
 `RADIUS_IDENTITY_MODE=managedidentity RADIUS_REINSTALL=false bash resources/deploy-radius-aks.sh`.
