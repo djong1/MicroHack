@@ -6,7 +6,8 @@ Estimated time: 30-45 minutes per environment | Difficulty: intermediate
 
 ## Challenge objective
 
-**Hosted Console:** use the supplied resource names and the **managed identity**
+**LAB** means facilitator-provided infrastructure; **BYOS** means bring your own
+subscription. For LAB, use the supplied resource names and the **managed identity**
 option for the installation below.
 
 Install and explore independent Radius control planes on both default platforms.
@@ -32,7 +33,7 @@ control plane and can operate independently.
 ## Connect to the lab resources
 
 Run once in **Bash from the Adaptive Apps lab directory**, after `az login`.
-Use your assigned values (not provisioning commands); Hosted Console participants
+Use your assigned values (not provisioning commands); LAB participants
 can source `artifacts/console-env.sh` instead of the two exports.
 
 ```bash
@@ -77,8 +78,8 @@ governance trade-offs.
 Before installation:
 
 1. Select AKS using the connection table above.
-2. **Hosted:** create a user-assigned managed identity in the supplied lab resource
-   group. **Bring your own subscription:** use that same path, or create a Microsoft
+2. **LAB:** create a user-assigned managed identity in the supplied lab resource
+   group. **BYOS:** use that same path, or create a Microsoft
    Entra application and service principal if you have tenant permissions.
 3. Use the AKS OIDC issuer to create federated credentials for the Radius service
    accounts in namespace `radius-system`: `applications-rp`, `bicep-de`, `ucp`,
@@ -170,28 +171,30 @@ Prepare a short team explanation of:
 
 ## Optional automation and platforms
 
-Manual installation is the intended learning path. If a participant must skip or
-recover the exercise, these scripts perform the same setup:
+Manual installation is the intended learning path. These scripts automate
+**Radius installation and post-configuration on existing clusters**, not
+AKS/K3s infrastructure provisioning or reinstallation:
 
 - `resources/deploy-radius-aks.sh`
 - `resources/deploy-radius-k3s.sh`
 
-For K3s recovery, switch to K3s using the connection table above, then run
-`bash resources/deploy-radius-k3s.sh` on **each participant's workstation**.
+For K3s in **LAB and BYOS**, switch to K3s using the connection table above, then run
+`RADIUS_REINSTALL=false bash resources/deploy-radius-k3s.sh` on **each participant's workstation**.
 It preserves an existing Radius installation, creates missing workspace/group/environment
 configuration, and validates the selected context, group, environment, and namespace.
 Conflicting existing environment settings fail explicitly rather than being overwritten.
 Use `RADIUS_REINSTALL=true` only for an intentional, team-coordinated reinstall.
 Dashboard exploration and the team discussion remain manual.
 
-For hosted AKS recovery, first source `artifacts/console-env.sh`, unset `KUBECONFIG`,
-and select `aks-adaptive-apps`, then explicitly run
+For AKS in **LAB and BYOS**, source `artifacts/lab-env.sh`, unset `KUBECONFIG`,
+and select `"$AKS_CONTEXT"`, then run
 `RADIUS_IDENTITY_MODE=managedidentity RADIUS_REINSTALL=false bash resources/deploy-radius-aks.sh`.
-The sourced Console configuration also exports these values. Keep
-`RADIUS_REINSTALL=false` to preserve an existing installation and coordinate
-recovery with the team. Without these overrides the script defaults to the
-application identity path and reinstall behavior for BYOS; do not use those defaults
-with hosted RG-only permissions.
+Managed identity is required for LAB; BYOS can alternatively use an Entra application
+if tenant permissions allow it. Keep the explicit `RADIUS_REINSTALL=false` to install
+Radius if missing or retain its existing control plane, then run post-configuration
+in either case. `RADIUS_REINSTALL=true` reinstalls **Radius only**, never AKS or K3s.
+The [walkthrough](../walkthrough/challenge-03/solution-03.md#optional-automation)
+details both identity options and the scripts' different raw defaults.
 
 If Azure Local or an existing Arc-enabled cluster replaces K3s, use its active context,
 create a distinct Radius workspace and environment, and decide explicitly whether it
