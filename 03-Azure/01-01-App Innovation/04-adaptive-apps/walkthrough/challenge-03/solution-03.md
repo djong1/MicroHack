@@ -19,18 +19,52 @@ identity** for Azure workload identity.
 
 ## Tutorial: Connect to the lab resources
 
-### 1. Initiate the connection from your dev container
+### 1. First-time setup (LAB and BYOS)
 
-Complete the [Challenge 03 connection setup](../../challenges/challenge-03.md#connect-to-the-lab-resources). It retrieves both clusters' credentials,
-refreshes stale K3s credentials, and exports the shared variables via
-`artifacts/lab-env.sh`. Do not repeat subscription/resource-group setup in each step.
-In each new Bash terminal:
+Run in **Bash from the Adaptive Apps MicroHack root** in your devcontainer.
+For **LAB**, use the subscription and resource group supplied by the facilitator.
+For **BYOS**, use the subscription and resource group prepared in Challenge 02.
+
+```bash
+az login
+export AZURE_SUBSCRIPTION="<subscription-id>"
+export RESOURCE_GROUP="<resource-group>"
+```
+
+For LAB, if `artifacts/console-env.sh` already exists, you can source it instead of
+the two exports. For nondefault resource names, also export `AKS_CLUSTER`,
+`K3S_VM_NAME`, and `BASTION_NAME` before continuing.
+
+```bash
+bash resources/connect-lab.sh && source artifacts/lab-env.sh
+```
+
+The helper retrieves both clusters' credentials, refreshes stale K3s credentials,
+and starts the Bastion API tunnel without provisioning infrastructure or installing
+Radius. It saves the shared variables to `artifacts/lab-env.sh`; sourcing that file
+exports them into **your current terminal** and leaves AKS selected. Running the
+helper alone cannot set variables in its parent shell.
+
+Do not continue if connection setup fails. Otherwise, subscription, resource-group,
+region, cluster/context, and K3s kubeconfig variables are ready for the remaining
+steps; do not set them again in each step.
+
+### 2. New terminals and reconnecting (LAB and BYOS)
+
+In each new Bash terminal, restore the saved variables:
 
 ```bash
 source artifacts/lab-env.sh
 ```
 
-After a devcontainer restart, also rerun `bash resources/connect-lab.sh`.
+After a devcontainer restart, restore the variables **before** rerunning the helper:
+
+```bash
+source artifacts/lab-env.sh
+bash resources/connect-lab.sh && source artifacts/lab-env.sh
+```
+
+If `artifacts/lab-env.sh` is missing, repeat the first-time setup instead.
 The tunnel exposes only the Kubernetes API on localhost. Radius dashboard access still
 uses `kubectl port-forward` through that API connection.
 
