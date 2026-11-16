@@ -141,7 +141,7 @@ kubectl get nodes
 kubectl get namespace radius-system --ignore-not-found
 ```
 
-### 2. Prepare Azure workload identity
+### 2. Prepare and Azure workload identity for Radius
 
 Hosted participants first source `artifacts/console-env.sh`; the defaults below
 preserve those supplied values. BYOS participants set their own subscription and
@@ -250,7 +250,7 @@ az ad app federated-credential create \
   --parameters @radius-applications-rp.json
 ```
 
-#### Grant the identity access (both options)
+#### Grant the identity access (both for MicroHack Console & BYOS)
 
 Grant the Radius identity Owner on the isolated lab resource group only, because
 recipes create role assignments. Allow identity/federation/RBAC propagation before
@@ -281,7 +281,7 @@ docker logout ghcr.io || true
 
 Then rerun the installation.
 
-### 4. Create the AKS workspace and scopes
+### 4. Create the Radius workspace and scopes in the Azure AKS environment
 
 ```bash
 rad workspace create kubernetes ws-azure-prod \
