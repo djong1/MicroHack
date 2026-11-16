@@ -308,7 +308,7 @@ docker logout ghcr.io || true
 
 Then rerun the installation.
 
-### 4. Create the AKS workspace and scopes
+### 4. Create the Radius workspace and scopes in the Azure AKS environment
 
 ```bash
 rad workspace create kubernetes ws-azure-prod \
@@ -334,7 +334,7 @@ rad credential register azure wi \
 
 ## Manual tutorial: K3s
 
-### 1. Select and verify K3s
+### 1. Select and verify K3s (local) 
 
 ```bash
 export KUBECONFIG="$K3S_KUBECONFIG"
@@ -344,13 +344,13 @@ kubectl get nodes
 kubectl get namespace radius-system --ignore-not-found
 ```
 
-### 2. Install Radius on K3s
+### 2. Install Radius on K3s (local) 
 
 ```bash
 rad install kubernetes --kubecontext "$K3S_CONTEXT"
 ```
 
-### 3. Create the K3s workspace and scopes
+### 3. Create the Radius workspace and scopes in the K3S (local) environment
 
 ```bash
 rad workspace create kubernetes ws-local-prod \
