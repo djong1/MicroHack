@@ -314,8 +314,12 @@ identity_deploy() {
   if ! jq --arg registry "${registry}" --arg tag "${tag}" '
     def value($c; $n):
       [$c.container.env[] | select(.name == $n)] |
-      if length == 1 and (.[0] | has("value")) then .[0].value
-      else error("Required literal input missing; use the manual deployment route") end;
+      if length != 1 or (.[0] | has("valueFrom")) then
+        error("Required literal input missing; use the manual deployment route")
+      elif (.[0] | has("value")) then
+        if (.[0].value | type) == "string" then .[0].value
+        else error("Required literal input must be a string") end
+      else "" end;
     (.[] | select(.name == "frontend")) as $f |
     (.[] | select(.name == "backend")) as $b |
     ($f.pod.spec.serviceAccountName // "default") as $sa |

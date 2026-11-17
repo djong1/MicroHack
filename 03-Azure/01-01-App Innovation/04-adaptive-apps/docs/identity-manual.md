@@ -274,6 +274,7 @@ recovers the running frontend/backend image, auth username, cookie secret, workl
 client/tenant IDs, service account and Istio setting into owner-only temporary
 storage. It requires compatible frontend/backend settings and literal environment
 values. Unsupported shapes fail before `rad deploy`, rather than resetting values.
+Empty literal values are preserved even when Kubernetes omits their `value` field.
 
 For a fully manual deployment, first repeat broker authentication above and obtain
 the current client UUID. Keep your original Challenge 06 non-secret parameter values

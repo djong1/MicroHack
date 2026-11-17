@@ -63,7 +63,7 @@ rad() {
 }
 
 fixture_deployment() {
-  jq -n --arg scenario "${scenario}" '
+  jq -n --arg scenario "${scenario}" --arg target "${test_target}" '
     def env($name; $value): {name:$name,value:$value};
     def deployment($name):
       {metadata:{name:$name},spec:{template:{
@@ -96,6 +96,24 @@ fixture_deployment() {
     elif $scenario == "indirect-inputs" then
       .items[0].spec.template.spec.containers[0].env[0] =
         {name:"AZURE_CLIENT_ID",valueFrom:{secretKeyRef:{name:"identity",key:"client"}}}
+    elif $scenario == "missing-input" then
+      .items[0].spec.template.spec.containers[0].env |=
+        map(select(.name != "AZURE_CLIENT_ID"))
+    elif $scenario == "duplicate-input" then
+      .items[0].spec.template.spec.containers[0].env +=
+        [{name:"AZURE_CLIENT_ID",value:"another-client"}]
+    elif $scenario == "malformed-input" then
+      .items[0].spec.template.spec.containers[0].env[0].value = null
+    elif $scenario == "mixed-input" then
+      .items[0].spec.template.spec.containers[0].env[0].valueFrom =
+        {secretKeyRef:{name:"identity",key:"client"}}
+    elif $scenario == "default-omitted" or $scenario == "default-explicit" then
+      .items[].spec.template.spec.containers[0].env |= map(
+        if .name == "AZURE_CLIENT_ID" or
+          (.name == "AZURE_TENANT_ID" and $target == "k3s") then
+          if $scenario == "default-omitted" then del(.value)
+          else .value = "" end
+        else . end)
     else . end
   '
 }
@@ -320,7 +338,10 @@ main() {
       fi
     done
     action=deploy
-    for name in deployment deploy-failure interrupted unsupported-inputs unsupported-istio indirect-inputs namespace-api missing-oidc; do
+    for name in deployment default-omitted default-explicit deploy-failure \
+      interrupted unsupported-inputs unsupported-istio indirect-inputs \
+      missing-input duplicate-input malformed-input mixed-input namespace-api \
+      missing-oidc; do
       new_case "${name}"
       answers=$'fixture-current-admin\nfixture-frontend-password'
       if [[ "${name}" == deployment ]]; then
@@ -341,9 +362,27 @@ main() {
         ' "${case_dir}/saved-parameters.json" >/dev/null
         grep -F 'oidcBrowserAuthEndpoint=http://localhost:8080/' "${case_dir}/calls" >/dev/null
         grep -F 'oidcIssuer=http://core-keycloak.core.svc.cluster.local:8080/' "${case_dir}/calls" >/dev/null
+      elif [[ "${name}" == default-* ]]; then
+        run_helper pass
+        jq -e --arg target "${test_target}" '
+          .parameters as $p |
+          $p.frontendClientId.value == "" and
+          $p.backendClientId.value == "" and
+          $p.workloadIdentityTenantId.value ==
+            (if $target == "k3s" then "" else "custom-tenant" end)
+        ' "${case_dir}/saved-parameters.json" >/dev/null ||
+          test_error "Default identity inputs were not preserved"
       else run_helper fail; fi
+      if [[ "${name}" == indirect-inputs || "${name}" == missing-input ||
+        "${name}" == duplicate-input || "${name}" == malformed-input ||
+        "${name}" == mixed-input ]]; then
+        grep -F 'Cannot preserve current inputs' "${case_dir}/output" >/dev/null ||
+          test_error "Invalid environment input did not report preservation failure"
+      fi
       if [[ "${name}" == namespace-api || "${name}" == unsupported-* ||
-        "${name}" == indirect-inputs ]]; then
+        "${name}" == indirect-inputs || "${name}" == missing-input ||
+        "${name}" == duplicate-input || "${name}" == malformed-input ||
+        "${name}" == mixed-input ]]; then
         ! grep 'rad deploy' "${case_dir}/calls" >/dev/null ||
           test_error "Deployment after failed input discovery"
       fi
