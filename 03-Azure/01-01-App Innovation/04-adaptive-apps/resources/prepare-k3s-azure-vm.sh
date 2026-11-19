@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Invoke with Bash from the Adaptive Apps MicroHack root; executable bits are not required.
-set -euo pipefail
+set -Eeuo pipefail
 trap 'echo "ERROR: K3s preparation failed at line ${LINENO}. Review Azure Policy and role-assignment errors above." >&2' ERR
 
 TEMP_FILES=()
@@ -17,7 +17,7 @@ readonly K3S_API_PORT="6443"
 readonly KUBECONFIG_CHUNK_SIZE="1800"
 
 AZURE_LOCATION="${AZURE_LOCATION:-westeurope}"
-RESOURCE_GROUP="${RESOURCE_GROUP:-rg-adaptive-apps}"
+RESOURCE_GROUP="${RESOURCE_GROUP:-}"
 VNET_NAME="${VNET_NAME:-vnet-adaptive-apps}"
 VNET_PREFIX="${VNET_PREFIX:-10.42.0.0/16}"
 K3S_SUBNET_NAME="${K3S_SUBNET_NAME:-snet-k3s}"
@@ -27,6 +27,7 @@ K3S_NSG_NAME="${K3S_NSG_NAME:-nsg-adaptive-apps-k3s}"
 K3S_NIC_NAME="${K3S_NIC_NAME:-nic-adaptive-apps-k3s}"
 K3S_VM_NAME="${K3S_VM_NAME:-vm-adaptive-apps-k3s}"
 K3S_VM_SIZE="${K3S_VM_SIZE:-Standard_D4s_v5}"
+K3S_VERSION="${K3S_VERSION:-v1.33.13+k3s1}"
 # Four-vCPU, 16 GiB x64 sizes in decreasing order of preference. Regions and
 # subscriptions differ in what they offer, so the script falls back automatically.
 # These are Azure VM sizes: an arm64 workstation still provisions an x64 Azure VM,
@@ -69,9 +70,19 @@ Usage: bash resources/prepare-k3s-azure-vm.sh [provision|connect|status|disconne
 
 Required for provision/connect:
   AZURE_SUBSCRIPTION   Target Azure subscription ID.
+  RESOURCE_GROUP       Lab Azure resource group.
+
+Provision pins K3s to v1.33.13+k3s1 by default. K3S_VERSION can select another
+explicit release. An existing installation must match; no automatic version
+changes are performed.
+
+For status/disconnect of a running tunnel, retain the same RESOURCE_GROUP so its
+process identity can be verified. These modes do not require Azure authentication.
 
 The kubeconfig endpoint defaults to https://127.0.0.1:16443. Override the local port
 with K3S_LOCAL_PORT before provisioning and on every later connect command.
+Connect retrieves kubeconfig when missing. Set K3S_REFRESH_KUBECONFIG=true to
+refresh an existing file after reprovisioning or when changing the local port.
 EOF
 }
 
@@ -86,6 +97,11 @@ case "$MODE" in
     exit 2
     ;;
 esac
+
+if [[ "$MODE" == "provision" && ! "$K3S_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+$ ]]; then
+  echo "K3S_VERSION must be an exact release such as v1.33.13+k3s1." >&2
+  exit 2
+fi
 
 is_integer() {
   [[ "$1" =~ ^[0-9]+$ ]]
@@ -104,6 +120,7 @@ tunnel_pid_matches() {
   local pid="$1"
   local command_line
 
+  [[ -n "$RESOURCE_GROUP" ]] || return 1
   is_pid_running "$pid" || return 1
   [[ -r "/proc/${pid}/cmdline" ]] || return 1
   command_line="$(tr '\0' ' ' <"/proc/${pid}/cmdline")"
@@ -214,6 +231,10 @@ disconnect_tunnel() {
 }
 
 if [[ "$MODE" == "status" ]]; then
+  if [[ -z "$RESOURCE_GROUP" && -f "$TUNNEL_PID_FILE" ]]; then
+    echo "Set RESOURCE_GROUP to the lab Azure resource group to verify the recorded tunnel." >&2
+    exit 1
+  fi
   if tunnel_status; then
     exit 0
   fi
@@ -221,11 +242,18 @@ if [[ "$MODE" == "status" ]]; then
 fi
 
 if [[ "$MODE" == "disconnect" ]]; then
+  if [[ -z "$RESOURCE_GROUP" && -f "$TUNNEL_PID_FILE" ]]; then
+    echo "Set RESOURCE_GROUP to the lab Azure resource group to verify the recorded tunnel." >&2
+    exit 1
+  fi
   if disconnect_tunnel; then
     exit 0
   fi
   exit 1
 fi
+
+: "${AZURE_SUBSCRIPTION:?Set AZURE_SUBSCRIPTION to the target subscription ID.}"
+: "${RESOURCE_GROUP:?Set RESOURCE_GROUP to the lab Azure resource group.}"
 
 for command_name in az base64 cut grep install jq kubectl nohup sed tail timeout tr wc; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -234,7 +262,6 @@ for command_name in az base64 cut grep install jq kubectl nohup sed tail timeout
   }
 done
 
-: "${AZURE_SUBSCRIPTION:?Set AZURE_SUBSCRIPTION to the target subscription ID.}"
 if ! is_integer "$K3S_LOCAL_PORT"; then
   echo "K3S_LOCAL_PORT must be an unprivileged TCP port from 1024 through 65535." >&2
   exit 1
@@ -259,8 +286,7 @@ if ! az extension show --name bastion >/dev/null 2>&1; then
   exit 1
 fi
 
-az account show >/dev/null 2>&1 || az login
-az account set --subscription "$AZURE_SUBSCRIPTION"
+source "$(dirname "${BASH_SOURCE[0]}")/azure-session.sh"
 SUBSCRIPTION_ID="$(az account show --query id --output tsv)"
 readonly SUBSCRIPTION_ID
 readonly VM_RESOURCE_ID="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Compute/virtualMachines/${K3S_VM_NAME}"
@@ -348,7 +374,7 @@ validate_k3s() {
   local expected_server="https://127.0.0.1:${K3S_LOCAL_PORT}"
 
   [[ -s "$K3S_KUBECONFIG" ]] || {
-    echo "Kubeconfig not found at ${K3S_KUBECONFIG}; run provision mode first." >&2
+    echo "Kubeconfig not found at ${K3S_KUBECONFIG}; rerun connect mode." >&2
     return 1
   }
   export KUBECONFIG="$K3S_KUBECONFIG"
@@ -358,7 +384,7 @@ validate_k3s() {
     --output jsonpath='{.clusters[0].cluster.server}')"
   [[ "$configured_server" == "$expected_server" ]] || {
     echo "Kubeconfig endpoint ${configured_server} does not match ${expected_server}." >&2
-    echo "Use the same K3S_LOCAL_PORT as provisioning, or rerun provision mode." >&2
+    echo "Use the same K3S_LOCAL_PORT, or reconnect with K3S_REFRESH_KUBECONFIG=true." >&2
     return 1
   }
   kubectl config use-context "$K3S_CONTEXT" >/dev/null
@@ -378,8 +404,8 @@ register_k3s_context_in_default_kubeconfig() {
   chmod 0600 "$merged_file"
   TEMP_FILES+=("$merged_file")
 
-  KUBECONFIG="${default_kubeconfig}:${K3S_KUBECONFIG}" \
-    kubectl config view --flatten >"$merged_file"
+  KUBECONFIG="${K3S_KUBECONFIG}:${default_kubeconfig}" \
+    kubectl config view --flatten --raw >"$merged_file"
   KUBECONFIG="$merged_file" kubectl config get-contexts --output name |
     grep -qx "$K3S_CONTEXT" || {
     echo "Could not register the ${K3S_CONTEXT} context in ${default_kubeconfig}." >&2
@@ -387,6 +413,70 @@ register_k3s_context_in_default_kubeconfig() {
   }
   install -m 0600 "$merged_file" "$default_kubeconfig"
   rm -f "$merged_file"
+}
+
+retrieve_kubeconfig() {
+  local encoded_length length_response start end response chunk
+  local encoded_file decoded_file current_context
+
+  install -d -m 0700 "$(dirname "$K3S_KUBECONFIG")"
+  encoded_file="$(mktemp)"
+  decoded_file="$(mktemp)"
+  chmod 0600 "$encoded_file" "$decoded_file"
+  TEMP_FILES+=("$encoded_file" "$decoded_file")
+
+  length_response="$(az vm run-command invoke \
+    --resource-group "$RESOURCE_GROUP" \
+    --name "$K3S_VM_NAME" \
+    --command-id RunShellScript \
+    --scripts 'set -eu; encoded="$(base64 -w0 /etc/rancher/k3s/k3s.yaml)"; printf "K3S_LENGTH:%s\n" "${#encoded}"' \
+    --output json)"
+  encoded_length="$(jq -r '.value[]?.message // empty' <<<"$length_response" |
+    sed -n 's/^K3S_LENGTH:\([0-9][0-9]*\)$/\1/p' |
+    tail -n 1)"
+  is_integer "$encoded_length" && ((encoded_length > 0 && encoded_length <= 65536)) || {
+    echo "Could not determine a safe K3s kubeconfig length from Run Command." >&2
+    return 1
+  }
+
+  : >"$encoded_file"
+  for ((start = 1; start <= encoded_length; start += KUBECONFIG_CHUNK_SIZE)); do
+    end=$((start + KUBECONFIG_CHUNK_SIZE - 1))
+    echo "Retrieving protected kubeconfig chunk at offset ${start}."
+    response="$(az vm run-command invoke \
+      --resource-group "$RESOURCE_GROUP" \
+      --name "$K3S_VM_NAME" \
+      --command-id RunShellScript \
+      --scripts "set -eu; printf 'K3S_CHUNK_BEGIN\n'; base64 -w0 /etc/rancher/k3s/k3s.yaml | cut -c ${start}-${end}; printf '\nK3S_CHUNK_END\n'" \
+      --output json)"
+    chunk="$(jq -r '.value[]?.message // empty' <<<"$response" |
+      sed -n '/^K3S_CHUNK_BEGIN$/,/^K3S_CHUNK_END$/p' |
+      sed '1d;$d' |
+      tr -d '\r\n')"
+    [[ "$chunk" =~ ^[A-Za-z0-9+/=]+$ ]] || {
+      echo "Run Command returned an invalid kubeconfig chunk at offset ${start}." >&2
+      return 1
+    }
+    printf '%s' "$chunk" >>"$encoded_file"
+  done
+
+  [[ "$(wc -c <"$encoded_file" | tr -d '[:space:]')" == "$encoded_length" ]] || {
+    echo "Run Command kubeconfig retrieval was incomplete." >&2
+    return 1
+  }
+  base64 --decode "$encoded_file" >"$decoded_file"
+  grep -q '^apiVersion:' "$decoded_file"
+  sed -E \
+    "s#server: https://[^[:space:]]+#server: https://127.0.0.1:${K3S_LOCAL_PORT}#" \
+    "$decoded_file" >"$encoded_file"
+  install -m 0600 "$encoded_file" "$K3S_KUBECONFIG"
+  current_context="$(KUBECONFIG="$K3S_KUBECONFIG" kubectl config current-context)"
+  if [[ "$current_context" != "$K3S_CONTEXT" ]]; then
+    KUBECONFIG="$K3S_KUBECONFIG" kubectl config rename-context \
+      "$current_context" "$K3S_CONTEXT" >/dev/null
+  fi
+  rm -f "$encoded_file" "$decoded_file"
+  register_k3s_context_in_default_kubeconfig
 }
 
 if [[ "$MODE" == "connect" ]]; then
@@ -420,6 +510,9 @@ if [[ "$MODE" == "connect" ]]; then
     echo "Bastion must be Succeeded, Standard or Premium, and have native tunneling enabled." >&2
     exit 1
   }
+  if [[ ! -s "$K3S_KUBECONFIG" || "${K3S_REFRESH_KUBECONFIG:-false}" == "true" ]]; then
+    retrieve_kubeconfig
+  fi
   ensure_tunnel
   validate_k3s
   register_k3s_context_in_default_kubeconfig
@@ -875,6 +968,16 @@ K3S_INSTALL_RESPONSE="$(az vm run-command invoke \
   --command-id RunShellScript \
   --scripts "
 set -eu
+required_version='${K3S_VERSION}'
+if command -v k3s >/dev/null 2>&1; then
+  installed_version=\"\$(k3s --version)\"
+  installed_version=\"\${installed_version#k3s version }\"
+  installed_version=\"\${installed_version%% *}\"
+  if [ \"\$installed_version\" != \"\$required_version\" ]; then
+    printf 'K3S_VERSION_MISMATCH: Existing K3s version %s does not match required %s. Automatic version changes are not supported. Use a fresh lab VM.\n' \"\$installed_version\" \"\$required_version\" >&2
+    exit 1
+  fi
+fi
 install -d -m 0755 /etc/rancher/k3s
 cat >/etc/rancher/k3s/config.yaml <<EOF
 tls-san:
@@ -893,7 +996,7 @@ else
     exit 1
   fi
   curl -sfL https://get.k3s.io --output /tmp/install-k3s.sh
-  sh /tmp/install-k3s.sh
+  INSTALL_K3S_VERSION=\"\$required_version\" sh /tmp/install-k3s.sh
   rm -f /tmp/install-k3s.sh
 fi
 systemctl is-active --quiet k3s
@@ -901,6 +1004,11 @@ printf 'K3S_INSTALL_OK\n'
 " \
   --output json)"
 readonly K3S_INSTALL_RESPONSE
+K3S_VERSION_ERROR="$(jq -r '.value[]?.message // empty | split("\n")[] | select(startswith("K3S_VERSION_MISMATCH:"))' <<<"$K3S_INSTALL_RESPONSE")"
+if [[ -n "$K3S_VERSION_ERROR" ]]; then
+  printf '%s\n' "$K3S_VERSION_ERROR" >&2
+  exit 1
+fi
 if jq -r '.value[]?.message // empty' <<<"$K3S_INSTALL_RESPONSE" |
   grep -qx 'K3S_NO_OUTBOUND'; then
   echo "The K3s VM has no outbound internet access, so the installer could not be downloaded." >&2
@@ -915,77 +1023,6 @@ jq -r '.value[]?.message // empty' <<<"$K3S_INSTALL_RESPONSE" |
   echo "K3s guest installation did not return its success marker." >&2
   echo "Inspect Azure VM Run Command status and outbound access from the private VM." >&2
   exit 1
-}
-
-retrieve_kubeconfig() {
-  local encoded_length
-  local length_response
-  local start
-  local end
-  local response
-  local chunk
-  local encoded_file
-  local decoded_file
-  local current_context
-
-  install -d -m 0700 "$(dirname "$K3S_KUBECONFIG")"
-  encoded_file="$(mktemp)"
-  decoded_file="$(mktemp)"
-  chmod 0600 "$encoded_file" "$decoded_file"
-  TEMP_FILES+=("$encoded_file" "$decoded_file")
-
-  length_response="$(az vm run-command invoke \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$K3S_VM_NAME" \
-    --command-id RunShellScript \
-    --scripts 'set -eu; encoded="$(base64 -w0 /etc/rancher/k3s/k3s.yaml)"; printf "K3S_LENGTH:%s\n" "${#encoded}"' \
-    --output json)"
-  encoded_length="$(jq -r '.value[]?.message // empty' <<<"$length_response" |
-    sed -n 's/^K3S_LENGTH:\([0-9][0-9]*\)$/\1/p' |
-    tail -n 1)"
-  is_integer "$encoded_length" && ((encoded_length > 0 && encoded_length <= 65536)) || {
-    echo "Could not determine a safe K3s kubeconfig length from Run Command." >&2
-    return 1
-  }
-
-  : >"$encoded_file"
-  for ((start = 1; start <= encoded_length; start += KUBECONFIG_CHUNK_SIZE)); do
-    end=$((start + KUBECONFIG_CHUNK_SIZE - 1))
-    echo "Retrieving protected kubeconfig chunk at offset ${start}."
-    response="$(az vm run-command invoke \
-      --resource-group "$RESOURCE_GROUP" \
-      --name "$K3S_VM_NAME" \
-      --command-id RunShellScript \
-      --scripts "set -eu; printf 'K3S_CHUNK_BEGIN\n'; base64 -w0 /etc/rancher/k3s/k3s.yaml | cut -c ${start}-${end}; printf '\nK3S_CHUNK_END\n'" \
-      --output json)"
-    chunk="$(jq -r '.value[]?.message // empty' <<<"$response" |
-      sed -n '/^K3S_CHUNK_BEGIN$/,/^K3S_CHUNK_END$/p' |
-      sed '1d;$d' |
-      tr -d '\r\n')"
-    [[ "$chunk" =~ ^[A-Za-z0-9+/=]+$ ]] || {
-      echo "Run Command returned an invalid kubeconfig chunk at offset ${start}." >&2
-      return 1
-    }
-    printf '%s' "$chunk" >>"$encoded_file"
-  done
-
-  [[ "$(wc -c <"$encoded_file" | tr -d '[:space:]')" == "$encoded_length" ]] || {
-    echo "Run Command kubeconfig retrieval was incomplete." >&2
-    return 1
-  }
-  base64 --decode "$encoded_file" >"$decoded_file"
-  grep -q '^apiVersion:' "$decoded_file"
-  sed -E \
-    "s#server: https://[^[:space:]]+#server: https://127.0.0.1:${K3S_LOCAL_PORT}#" \
-    "$decoded_file" >"$encoded_file"
-  install -m 0600 "$encoded_file" "$K3S_KUBECONFIG"
-  current_context="$(KUBECONFIG="$K3S_KUBECONFIG" kubectl config current-context)"
-  if [[ "$current_context" != "$K3S_CONTEXT" ]]; then
-    KUBECONFIG="$K3S_KUBECONFIG" kubectl config rename-context \
-      "$current_context" "$K3S_CONTEXT" >/dev/null
-  fi
-  rm -f "$encoded_file" "$decoded_file"
-  register_k3s_context_in_default_kubeconfig
 }
 
 retrieve_kubeconfig

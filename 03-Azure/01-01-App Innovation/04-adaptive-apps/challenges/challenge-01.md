@@ -1,6 +1,6 @@
 # Challenge 01 - Prerequisites: ready, set, go
 
-**[Home](../Readme.md)** - [Next Challenge >](challenge-02.md)
+**[Home](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/Readme.md)** - [Next Challenge >](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/challenges/challenge-02.md)
 
 Estimated time: 30-60 minutes | Difficulty: beginner
 
@@ -11,6 +11,14 @@ required by every challenge in this MicroHack.
 
 Challenge 01 is a universal prerequisite. Complete it before starting a challenge in
 any bucket.
+
+## Hosted Console participants
+
+Complete Tasks **2-4** for workstation setup and tools, then follow
+[Console setup](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/docs/console-setup.md)
+to sign in and connect from a **Bash terminal**. Skip the remaining setup tasks;
+your infrastructure is already supplied. Explore and validate it in **Challenge 02**,
+then continue to **Challenge 03** to install Radius.
 
 ## Learning goals
 
@@ -42,7 +50,9 @@ Confirm that your workshop team has:
 - Permission to create a resource group, AKS cluster, Linux VM, networking resources,
   Azure Bastion Standard, its managed public IP, a NAT gateway and its public IP, VM Run
   Command, and role assignments
-- Permission to create a Microsoft Entra application and service principal
+- Permission to create a user-assigned managed identity and role assignments in the
+  lab resource group, or tenant permission to create a Microsoft Entra application
+  and service principal for the optional application identity path
 - Regional quota for the AKS nodes, K3s VM, Azure Bastion, and two Standard public IP
   addresses
 - Contributor or equivalent resource permissions, Network Contributor where networking
@@ -60,7 +70,7 @@ deployed these services silently fails later with provider or feature errors:
 az account set --subscription "<subscription-id>"
 
 for provider in Microsoft.Network Microsoft.Compute Microsoft.ContainerService \
-  Microsoft.ContainerRegistry Microsoft.KeyVault Microsoft.Storage; do
+  Microsoft.ContainerRegistry Microsoft.ManagedIdentity Microsoft.KeyVault Microsoft.Storage; do
   az provider register --namespace "$provider" --wait
 done
 
@@ -202,12 +212,11 @@ always x64 Azure VM sizes even when the devcontainer runs on arm64.
 
 ##### Start the container
 
-Clone the fork and check out this MicroHack branch:
+Clone the canonical repository on `main`:
 
 ```bash
-git clone https://github.com/djong1/MicroHack.git
+git clone --branch main https://github.com/microsoft/MicroHack.git
 cd MicroHack
-git switch djong1-adaptive-apps-microhack
 code .
 ```
 
@@ -225,7 +234,8 @@ Radius CLI, PowerShell 7, Git, `jq`, `yq`, `curl`, SSH, and `tar`. These tools c
 every command in Challenges 01-06.
 The container is only a workstation: AKS, the Linux VM, K3s, Radius control planes,
 portfolio workloads, and recipes are still created on the remote Azure and Kubernetes
-targets by the commands you run.
+targets. Hosted setup supplies only AKS, the private VM with K3s, networking/NAT/Bastion,
+and ACR; participants install Radius, portfolio workloads, and recipes in 03-05.
 
 Sign in to Azure from inside the container. If the container cannot open a browser, use
 the device-code flow:
@@ -251,7 +261,7 @@ Install the following tools in one consistent shell environment:
 - [Bicep CLI](https://learn.microsoft.com/azure/azure-resource-manager/bicep/install)
 - [`kubectl`](https://kubernetes.io/docs/tasks/tools/)
 - [Helm 3](https://helm.sh/docs/intro/install/)
-- [Radius CLI (`rad`)](https://docs.radapp.io/getting-started/install/)
+- [Radius CLI (`rad`)](https://docs.radapp.io/installation/cli/)
 - [Git](https://git-scm.com/downloads)
 - `jq`, `yq`, `curl`, OpenSSH client, and `tar`
 - [Visual Studio Code](https://code.visualstudio.com/)
@@ -369,6 +379,12 @@ kubeconfig or SSH private key into the Git workspace.
 
 ## Success criteria
 
+For hosted labs, the success criteria are working local tools and a successful
+Console connection with both Kubernetes contexts, Ready nodes, a working private
+API tunnel, and `artifacts/console-env.sh`. Workspaces and `artifacts/types.tgz`
+are created by participants in Challenges 03 and 04, not by the connection helper.
+The capacity and subscription-wide checks below apply to manual setup only.
+
 You are ready to continue when:
 
 - Every required tool returns a version successfully.
@@ -404,8 +420,11 @@ You are ready to continue when:
 
 ## Learning resources
 
+Use **Radius 0.60.0** for this workshop. The current official CLI guide carries
+a preview compatibility warning; do not replace the pin with the newest release.
+
 - [Azure CLI installation](https://learn.microsoft.com/cli/azure/install-azure-cli)
 - [Install and set up kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [Helm installation](https://helm.sh/docs/intro/install/)
-- [Install the Radius CLI](https://docs.radapp.io/getting-started/install/)
+- [Install the Radius CLI](https://docs.radapp.io/installation/cli/)
 - [Install WSL](https://learn.microsoft.com/windows/wsl/install)

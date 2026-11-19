@@ -3,8 +3,8 @@
 - [**MicroHack introduction**](#microhack-introduction)
 - [**MicroHack context**](#microhack-context)
 - [**Objectives**](#objectives)
+- [**Environment setup**](#environment-setup)
 - [**MicroHack challenges**](#microhack-challenges)
-- [**Contributors**](#contributors)
 
 # MicroHack introduction
 
@@ -22,7 +22,7 @@ Across the challenges you will work with **PhotoAlbum** and **PhotoAlbum-Java** 
 
 After completing this MicroHack you will:
 
-- Know how to author a **Custom Agent** (`.agent.md`), package a reusable **Skill** (`SKILL.md`), and configure **MCP** (`mcp.json`), and understand the gated assess → plan → execute → validate loop.
+- Know how to author a **Custom Agent** (`.agent.md`), package a reusable **Skill** (`SKILL.md`), and configure **MCP** (`.github/mcp.json` for GitHub Copilot CLI), and understand the gated assess → plan → execute → validate loop.
 - Understand how to use the GitHub Copilot App Modernization agent (modernize CLI).
 - Know how to assess applications for cloud readiness and framework upgrade opportunities.
 - Be able to upgrade .NET and Java applications to their latest framework versions.
@@ -30,7 +30,7 @@ After completing this MicroHack you will:
 - Know how to create a cloud modernization plan, resolve cloud readiness issues, and migrate dependencies (for example, Oracle to PostgreSQL).
 - Be able to provision Azure infrastructure and deploy modernized apps to Azure Container Apps.
 
-# MicroHack challenges
+# Environment setup
 
 ## General prerequisites
 
@@ -39,10 +39,22 @@ This MicroHack has a few but important prerequisites.
 In order to use the MicroHack time most effectively, the following should be in place before you start:
 
 - An **Azure Subscription** with permission to create resource groups and resources (Contributor or Owner).
-- A **GitHub account** to fork the sample repositories.
-- **Visual Studio Code** and/or a terminal with the **GitHub Copilot App Modernization agent (modernize CLI)** installed.
-- **Docker Desktop**, **Git**, and the relevant SDKs (.NET and Java) installed locally.
+- A **GitHub account** to sign in to GitHub Copilot and clone the sample repositories.
 - An active **GitHub Copilot** subscription.
+- For the recommended Codespaces setup: permission to create a Codespace from the MicroHack repository (or a fork of it).
+- For a local setup: **Visual Studio Code**, the **GitHub Copilot App Modernization agent (modernize CLI)**, **GitHub Copilot CLI**, **GitHub CLI**, **Azure CLI**, **Docker Desktop**, **Git**, and the relevant SDKs (.NET and Java).
+
+GitHub Codespaces is the **supported environment** for this MicroHack — local setups are best-effort. The dedicated **Azure / App Innovation / GHCP App Modernization** development container installs the required tools consistently for all participants.
+
+Complete the [environment setup guide](docs/environment-setup.md) before starting the challenges. It covers:
+
+- creating a Codespace with the correct development container,
+- verifying the modernization and platform tools,
+- signing in to GitHub for GitHub Copilot and signing in to Azure,
+- cloning both sample applications, and
+- troubleshooting installation, authentication, SSO, and repository access.
+
+# MicroHack challenges
 
 ## Challenges
 
@@ -56,4 +68,3 @@ In order to use the MicroHack time most effectively, the following should be in 
 * [Solution 1 - Fundamentals: Custom Agents, Skills & MCP for App Modernization](./walkthrough/challenge-01/solution-01.md)
 * [Solution 2 - Batch Upgrade a Java App and a .NET App](./walkthrough/challenge-02/solution-02.md)
 * [Solution 3 - Modernize the Upgraded Apps and Deploy Them to Azure](./walkthrough/challenge-03/solution-03.md)
-

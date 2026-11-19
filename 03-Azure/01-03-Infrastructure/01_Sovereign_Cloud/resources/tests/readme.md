@@ -1,0 +1,653 @@
+# Sovereign Cloud Pester checks
+
+There are two kinds of tests: offline mocked script tests, and live health tests against explicitly selected Azure scopes. Live tests do not deploy attendee VMs, install agents, enable paid plans, apply patches or repair failures. They do not replace the [participant VM readiness exercise](../localbox/manual-preparation.md#step-6-test-the-environment).
+
+## Current validation and historical evidence
+
+Hosted Console automation invokes the upstream and Full LocalBox suites itself;
+manual delivery and deliberate diagnostics use the runner instructions below.
+The hosted wrapper additionally prepares resources, waits for reference-VM
+onboarding and requests an Update Manager assessment. Those operations are not
+side effects of the read-only health-test runner.
+
+The [9 November 2026 verified state](../hosted-events/readme.md#current-verified-state)
+records **26/26 LocalBox tests, 7/7 shared stages and 25/25 participant jobs**
+passing after targeted K3s recovery, with credential publication confirmed.
+It is a reuse/recovery result, not a clean first-attempt deployment benchmark.
+Participant sign-in, private/proxy application access, Defender cloud reporting
+and planned nested-VM capacity still require event-specific validation.
+
+The dated TEST observations below describe evidence available at each checkpoint.
+They retain original failures and outstanding checks; use the current summary
+for their later disposition. In particular, successful Full health does not
+resolve the historical startup watcher's missing successful terminal report.
+
+## Tooling and authentication
+
+Use PowerShell 7, Pester 5.7.1 or later within major version 5, Azure CLI, and `kubectl` for Full checks. Offline tests were exercised with PowerShell 7.4.13 and Pester 5.7.1. Live Windows/Azure validation remains an integration gate; these versions are not a claim that all LocalBox versions were tested.
+
+The runner uses the caller's existing Azure CLI login and never changes it. LocalBox control-plane checks can use its managed identity. Participant-lab checks need an operator authorized for those explicitly listed resource groups; the LocalBox identity is not automatically authorized there. Full LocalBox checks run on LocalBox-Client with a nested-node Windows credential. Do not serialize passwords or tokens in JSON.
+
+Full Kubernetes checks require kubeconfigs that already authenticate to the intended clusters. LocalBox defaults to `$HOME/.kube/config` (on Windows, `$HOME\.kube\config`), the usual path updated by `az connectedk8s proxy`. An explicit `-LocalBoxKubeconfig` takes precedence; otherwise a `LocalBox.Kubeconfig` value in the inventory is preserved before using the default. The selected file's current context must target `localbox-aks`; do not switch it during testing. For AKS Local, use an Entra group member in a separate CLI profile/session and the [Jumpstart proxy workflow](https://jumpstart.azure.com/azure_jumpstart_localbox/AKS). Keep the proxy/tunnel running throughout testing. For K3s, use its existing private/Bastion access path. Tests never switch the current kubeconfig or retrieve admin credentials automatically.
+
+## Challenge 4 browser-behavior unit tests
+
+From this directory, run `Invoke-Pester ./visual-attestation.tests.ps1 -Output Detailed`. These offline tests mock Azure and Docker commands. They cover `-SkipBrowser` output and comparison HTML generation for Codespaces, while preserving automatic browser launch for desktop users.
+
+A fresh Codespace smoke test is still required to validate the devcontainer build, Docker daemon, `confcom` policy generation and Azure deployment together; the mocked tests do not establish end-to-end Codespaces support.
+
+## Participant K3s installation checks
+
+### Quota-safe deployment retries
+
+Run `Invoke-Pester ./quota-reuse.tests.ps1,./shared-aks.tests.ps1,./global-localbox.tests.ps1 -Output Detailed`.
+Shared and participant quota checks reserve only the missing compute for the current
+participants. Discovery uses their stable resource names and ownership tags, reads
+actual K3s VM and AKS scale-set instance power states, and caps credit at the lab's
+one K3s VM and two nodes per pool. Deallocated, missing, unrelated and unconfirmed
+instances receive no credit; desired AKS node counts alone are not allocation evidence.
+Unrelated usage, including LocalBox, remains part of the subscription's used quota.
+Inventory failures stop the deployment rather than masquerading as an empty inventory.
+
+Retries preserve the saved subscription region and confidential SKU, even if preferred
+regions are reordered. Conflicting resources, invalid selection tags, or existing labs
+without participant identities stop with an error instead of choosing another region.
+Fresh subscriptions still evaluate the configured candidates and request their full
+aggregate compute requirement. These checks do not repair failed K3s extensions,
+skip Console stages, or change the deployment helper's resource-group fallback behavior.
+
+### Bounded K3s downloads
+
+Run `Invoke-Pester ./k3s-install.tests.ps1 -Output Detailed` on a host with Bash.
+These offline tests execute the actual Bicep-embedded installation script with
+mocked download, installer, service and Kubernetes commands. They cover successful
+installation, checksum/binary download failures, three-attempt exhaustion,
+20/40-second backoff, timeout propagation, stable-version selection across retries,
+installer cleanup, partial/existing installations, delayed node registration,
+API failures and node readiness failures. They do not download or install K3s.
+
+The extension retries each release lookup, installer download and installer
+execution at most three times. Lookup/download attempts have 60-second curl
+limits and 75-second process limits; each installer attempt has a 600-second
+process limit, followed by forced termination after a 15-second grace period if
+needed. The stable channel is resolved once successfully per extension execution,
+then the same version is used for all installer attempts. Upstream checksum
+verification remains enabled. Registration is checked up to 24 times, with
+5-second request limits and 5-second delays, followed by a bounded Ready check.
+Persistent failures remain extension failures. No retry deletes infrastructure.
+
+The 9 November event exercised the bounded installer, but three extensions still
+exhausted their attempts. An unchanged ARM redeployment surfaced the same old
+failure rather than executing the installer again. A separately authorized
+`forceUpdateTag` update triggered new executions; all three then installed on
+attempt 1/3, and service/Ready-node checks passed before the successful Console
+retry. This validates the [targeted recovery workflow](../hosted-events/readme.md#retry-a-failed-install-k3s-extension),
+not a guarantee that automatic retries overcome every download outage. Test
+with the reviewed content revision imported into Console.
+
+## MetalLB preparation checks
+
+Run `Invoke-Pester ./localbox-metallb-recovery.tests.ps1,./localbox-automation.tests.ps1 -Output Detailed`
+for hosted runtime recovery. Coverage includes healthy no-op and delayed initial
+convergence, pool-only/advertisement-only readiness, one unchanged Azure PUT,
+post-PUT convergence/exhaustion, persistent attempt recording before ambiguous
+submission failure, scope/configuration conflicts, API errors, and route cleanup.
+Recovery runs before the normal Full suite; the tests themselves remain read-only.
+Offline fixtures simulate missing objects without deleting healthy live resources.
+Live verification on traininglab-02 confirmed that the recovery preflight performs
+no PUT when the objects exist, followed by **14/14 Full health tests passing** and
+verified temporary-route cleanup. The missing-object/retry branches are tested
+with fixtures; no healthy live objects were removed to manufacture a failure.
+At that checkpoint, live automatic recovery remained unverified. TEST13 later
+exercised one bounded unchanged-pool reapply during resume, and
+[TEST14](../hosted-events/test-14-timing-analysis.md) exercised recovery during
+its cold deployment. Those results do not turn the read-only tests into repair tools.
+
+MetalLB preparation tests are included in `prepare-localbox.tests.ps1`. Run
+`Invoke-Pester ./prepare-localbox.tests.ps1 -FullName 'LocalBox MetalLB preparation*','MetalLB health evidence*','CLI output streams*' -Output Detailed`
+for the focused offline checks. They cover reserved VIP validation, idempotent
+extension/pool installation, WhatIf, discovery failures, conflicting configuration
+and failure propagation without deleting shared resources. CLI tests use real
+background-job serialization to cover empty, single-entry, multi-entry, paginated,
+and malformed ARM collection responses, including deserialized `ArrayList` values.
+Mocked health checks
+also reject missing or mismatched address pools and L2 advertisements. The live LocalBox
+suite now requires the `MetalLb` manifest fields; rerun preparation for older
+manifests. Full checks also inspect the Kubernetes IPAddressPool and L2Advertisement.
+They do not replace the participant proxy/port-forward test or a separately
+authorized test of real network access through the load-balancer address.
+
+## LocalBox registration-region checks
+
+The LocalBox registration-region contract is checked offline with
+`Invoke-Pester ./prepare-localbox.tests.ps1 -FullName 'LocalBox registration region contract*' -Output Detailed`.
+It verifies that both deployment entry points default registration to Australia East,
+the global hook passes that region independently of host-region selection, and
+all four Challenge 1 policy parameter examples include the Australia East lab-only
+exception while retaining the four European regions. These checks make no
+Azure changes. The later hosted event verified LocalBox provisioning with this
+registration setting; participant VM creation in the assigned scope remains an
+event-specific check of service availability and effective inherited policies.
+
+## Global event LocalBox checks
+
+### ARM capacity and safe retries
+
+Run `Invoke-Pester ./localbox-arm-recovery.tests.ps1,./global-localbox.tests.ps1,./localbox-deployment.tests.ps1,./hosted-tag-policy.tests.ps1 -Output Detailed`.
+These offline regressions cover the TEST16 asynchronous `SkuNotAvailable` path:
+nested operation diagnostics, redaction, bounded traversal, mixed/unknown/read
+failures, canceled deployments, completion before guest automation, E32s_v6 to
+E32s_v5 fallback, inventory rechecks, existing-VM protection and refusal to move
+partial regional resources. SKU restrictions and both family/regional headroom
+are checked before submission. Hosted policy tests verify preservation of an
+existing identity's location when host preferences change.
+
+The tests do not allocate capacity, delete resources or prove the alternate SKU
+works in a live event. See [ARM recovery and the TEST16 status](../hosted-events/readme.md#localbox-arm-capacity-failures);
+a new Console run remains the integration gate.
+
+On 10 November 2026, the combined ARM-recovery, global LocalBox, deployment,
+preparation, hosted-tag-policy, hosted-Defender, shared-AKS and quota-reuse suites
+passed **563 tests**, with none failed or skipped. A separate GET-only Azure CLI
+adapter fed the actual TEST16 deployment/operation responses into the new wait
+helper and verified the nested `SkuNotAvailable` classification and diagnostic
+message. This read-only check did not deploy, retry or resize a VM.
+
+### Startup and guest automation
+
+Run `Invoke-Pester ./localbox-winget.tests.ps1,./localbox-startup.tests.ps1,./localbox-deployment.tests.ps1 -Output Detailed`
+for WinGet provisioning failures. These checks cover bounded HTTP 504 retries,
+CLI/module version mismatch, COM activation failure, nonzero/missing native exit
+codes, process timeout cleanup, prerequisite-task failure propagation, exact
+upstream transformations and removal of only the retired Azure Data Studio
+resource. Real upstream Bootstrap/WinGet scripts and the package configuration
+are also transformed and syntax/compilation checked offline.
+
+TEST14 startup regressions cover native/user/machine BGInfo discovery, ambiguous
+and missing installations, checked invocation with a spaced configuration path,
+and exact persistent upstream test-runner patching. Monitor tests cover scheduled
+task removal while the guarded process remains active, missing/unowned and
+cross-process owned mutexes, terminal-report races, unchanged deadlines, and
+bounded redacted failures. The submitted standalone monitor embeds the shared
+formatter; no current deployment's immutable startup payload is rewritten.
+The coupled startup, WinGet, deployment, automation, validation-retry, global
+LocalBox and failure-summary suites passed **292 tests**. Current upstream Bicep
+and script transformations compiled with a **33,073-byte** startup payload.
+A read-only Windows PowerShell 5.1 probe resolved the actual installed BGInfo
+binary, verified cross-process mutex ownership, parsed the packaged standalone
+monitor and verified redacted failure details. It did not execute BGInfo, start
+startup tasks or change the current test runner. At this checkpoint, a fresh
+deployment was still needed to verify startup and subsequent-logon behavior.
+See the later BGInfo evidence below and the current validation summary.
+
+TEST15 isolated the remaining BGInfo failure to stale PowerShell `LASTEXITCODE`,
+not a failed BGInfo process. In the existing desktop session, direct GUI invocation
+preserved seeded exit codes of both 1 and 0, while an explicitly awaited process
+returned 0. The helper now uses `Start-Process -PassThru`, waits up to 60 seconds,
+checks the actual process exit code and rejects errors written by BGInfo's `/log`
+option. `/silent` prevents unattended error dialogs; it does not suppress failure
+reporting. A timed-out process is terminated by its own handle, and failure logs
+remain in the invoking user's temporary directory for diagnosis.
+
+The updated coupled suites passed **302 tests**. Tests cover stale caller exit
+codes, actual nonzero/missing exits, launch errors, timeout/termination cleanup,
+quoted paths, error-log redaction and successful log cleanup. Real BGInfo 4.34
+was then verified in the TEST15 desktop session under PowerShell 7.6.9 and Windows
+PowerShell 5.1: the original configuration succeeded despite a seeded exit code
+of 1, while an invalid configuration failed with the actual exit code 2.
+Temporary probe tasks/files were removed. The upstream Bicep and script transforms
+compiled with a **34,442-byte** startup payload. This is a future-deployment fix:
+the existing immutable startup payload and historical failure report were not
+rewritten, and storage initialization was not replayed. The later event Client
+contained the fix, showed no BGInfo failure and had the subsequent-logon Pester
+task registered. Actual subsequent-logon execution is a separate check, and the
+historical `StartupExited` watcher report still lacks a successful terminal
+report; registration and passing Full health do not resolve that discrepancy.
+
+The combined WinGet, startup, deployment, automation, validation-retry, global
+LocalBox and failure-summary suites passed **267 tests** after these changes.
+The real upstream Bicep compiled with the 30,679-byte guarded payload, and
+existing-VM custom-data preservation was verified.
+
+Live TEST12 repair verified matching CLI/Client 1.29.380, successful COM
+enumeration, zero-exit package configuration after the retired-entry removal,
+and executable AzCopy. After safe resume, both base-image SHA256 checksums
+passed at 18:15:09 UTC on 6 November 2026. That instance was then used for nested
+deployment checks but was later torn down without a verified Full health pass,
+as recorded in the TEST12 closeout below. These prerequisite checks alone do not
+establish end-to-end readiness.
+
+Run `Invoke-Pester ./localbox-startup.tests.ps1,./localbox-deployment.tests.ps1 -Output Detailed`
+for future-only startup protection. Offline checks cover new/existing VM
+custom-data handling, immutable identity retention, strict upstream source
+recognition, checksum/cache validation, bounded retries, native exit/timeout
+handling, cleanup, persistent replay prevention, Console report correlation and
+one-hour/two-minute monitoring thresholds. Mocked transfers never download VHDs
+or restart a live VM. The modified real upstream Bicep was compiled, and both
+upstream script transformations were syntax-checked offline. A new Windows
+deployment was required at that checkpoint to verify custom-data delivery,
+scheduled-task execution and Console reporting together. Later infrastructure
+success does not close the startup-monitor discrepancy described above;
+existing failed instances are deliberately not retrofitted.
+
+The startup suite also covers WinGet-before-storage ordering, the one-hour
+prerequisite timeout, stale-PATH AzCopy resolution using only the current user's
+known WinGet paths, ambiguous/missing installations, and reporting the new
+prerequisite phase. Deployment checks verify that startup identity tags are
+merged into the resource group so upstream progress updates preserve them.
+An existing monitor with missing VM identity tags fails explicitly without
+restarting or overwriting anything.
+On traininglab-17, a read-only Windows probe ran the actual resolver with AzCopy
+absent from the process PATH. It resolved the startup user's existing WinGet
+link and successfully ran `azcopy --version`; no image was downloaded and no
+deployment was resumed. This isolated probe did not validate the prerequisite
+race or tag retention end to end; later deployment evidence is tracked separately
+in the current validation summary.
+
+Error-boundary regressions cover a non-terminating upstream task lookup followed
+by its readiness gate, a subsequent terminating readiness failure, explicit
+`-ErrorAction Stop`, and bounded/redacted underlying startup errors. Packaging
+checks verify that the embedded diagnostic formatter is identical to the shared
+host formatter, rather than a separate redaction implementation. The guard's own
+strict download/checksum failures and the final readiness gates remain covered.
+Read-only TEST11 diagnostics confirmed the missing customization task and both
+required bootstrap-module directories on each node; the full resumed deployment
+was not executed.
+A PowerShell 7 probe on that Client reproduced the lookup failure under the old
+strict boundary and passed both node checks with function-local `Continue`.
+However, it did not model imported-module preference resolution: TEST12 still
+failed because the module resolved global `Stop`. The corrected boundary now
+temporarily sets global `Continue` too and restores it in `finally`. Three
+regressions exercise a real imported module, including explicit `Stop` and
+terminating readiness failures. A new read-only TEST12 probe reproduced the
+module-scoped failure and verified the corrected boundary against both nodes and
+the installed module's readiness helper. Both lookup errors remained visible and
+the global preference was restored. Neither probe started tasks or replayed
+initialization; the separate authorized step-9 continuation is still subject to
+all deployment and Full health gates.
+
+Run `Invoke-Pester ./localbox-failure-summary.tests.ps1,./localbox-automation.tests.ps1 -Output Detailed`
+for Console failure reporting. Tests cover run/content/group/scope correlation,
+real NUnit failure counts and messages, missing/malformed reports, prohibited XML
+entities, bounded output, credential redaction, and preservation of the original
+guest error when report downloads fail. No transcript or raw guest stdout is
+printed as a diagnostic fallback.
+
+The formatter was also verified on traininglab-02 against its original failed
+run (`682105d5-dfa6-4cba-a646-74ee20fe7121`): Pester phase, upstream 12/12,
+Sovereign 13 passed / 1 failed, and the missing `aks-pool` Kubernetes error.
+This read-only report check did not rerun the Console job or change readiness;
+the later passing MetalLB repair reports were not used as the failure fixture.
+
+Run `Invoke-Pester ./localbox-validation-retry.tests.ps1 -Output Detailed` for
+the bounded Azure Local validation recovery. These mocked tests cover the exact
+content-download timeout classifier, the unchanged nested wait budget, one
+asynchronous recovery, Console restart/resume, stale execution state, persisted
+PATH refresh, missing-CLI failure before submission, bounded/redacted error
+propagation, existing local-file/correlation checks, managed-identity CLI-profile
+cleanup, and validation-before-deploy ordering. They never submit Azure
+deployments. The reported traininglab-58 failure could not be read with the
+available operator permissions. TEST12 later exercised the real timeout path,
+but its retry initially failed before submission because the VM agent retained
+a PATH from before Azure CLI installation. A read-only live SYSTEM probe
+verified the actual repaired helpers, native CLI, managed-identity access and
+matching existing template/parameter contract. The repaired bounded retry
+successfully validated that instance at 22:25:07 UTC on 6 November 2026 and
+submitted deployment. ARM deployment succeeded at 00:48:09 UTC on 7 November,
+and the nested connectivity gate passed. Guest preparation and Full health
+verification remain pending; this is resumed-instance evidence, not proof of a
+successful fresh Console deployment.
+
+TEST12 was subsequently torn down, as confirmed by the organizer. Recovery has
+stopped. No successful Full health report was verified before teardown; the
+verified intermediate stages and offline test results must not be interpreted
+as an end-to-end pass. A separately authorized deployment is required to finish
+that integration verification.
+
+Run `Invoke-Pester ./localbox-deployment.tests.ps1 -Output Detailed` for the
+LocalBox Developer Bastion deployment contract. These tests require Azure CLI
+with Bicep available: they compile the network module locally, then mock Azure
+deployment operations. They verify the Developer VNet binding, retained NAT
+outbound path, absence of dedicated Bastion resources, complete Console
+packaging, manual-entry-point forwarding, and refusal to downgrade an existing
+dedicated Bastion or remove its subnet. They do not deploy resources or verify
+real portal connectivity; a fresh deployment remains the integration gate.
+
+Run `Invoke-Pester ./localbox-automation.tests.ps1,./global-localbox.tests.ps1 -Output Detailed`
+for the hosted readiness gate. Offline tests cover token refresh on every poll,
+nested readiness beyond ARM success, imported-content packaging, event-group
+propagation, asynchronous execution, active-run resume/conflicts, stale instance
+views, nonzero guest exit codes, run-correlated JSON/XML, default guest preparation,
+update-assessment failure, credential-file cleanup and diagnostic-upload failures.
+They do not exercise Windows SYSTEM, real managed Run Command, Blob RBAC propagation,
+AKS admin credentials, or a multi-hour Console token rotation; those are live gates.
+
+Blob readiness regression cases use the real retry loop and status writer with
+mocked Azure CLI calls: listing succeeds while the first two uploads fail,
+preparation starts only after a successful upload, exhausted write readiness
+blocks preparation and health tests, and explicit authorization errors remain
+fatal. These cover the TEST13 read-before-write permission-propagation failure
+without treating mocked retries as proof of live Blob access.
+The TEST13 fix passed all **529 tests** across the automation, preparation and
+global LocalBox suites, including synchronized guest-source checksum checks.
+The authorized live resume subsequently completed at 23:48:40 UTC on
+7 November 2026. A separate read-only probe used the repository's result/XML
+validators to verify the exact run, package, group and Azure scope, both XML
+reports, matching Full JSON counts and report timestamps: **12/12 upstream and
+14/14 Sovereign tests passed**, with none failed, skipped or unrun. The run also
+exercised successful bounded MetalLB recovery (one unchanged ARP-pool reapply).
+This establishes resumed shared LocalBox Full health, not the skipped Console
+downstream stages, participant sign-in or Defender cloud reporting.
+
+Packaging tests also emulate the Console's `labautomation`-only mount, with no
+sibling `resources` directory. They verify immutable source pins and SHA256
+checks, reject missing/mutable/corrupt sources, prevent mixing partial local
+sources with downloads, and check that packaging failure stops the global hook
+before Azure changes. Source-pin digests must match the checkout's guest files.
+
+Hosted automation runs upstream infrastructure tests and the existing LocalBox
+Full suite **inside the Client**, without downloading a second copy of Sovereign
+tests from `main`. The automation wrapper (not the read-only test runner) obtains
+and later removes a private AKS admin kubeconfig and requests one reference-VM
+update assessment. This is distinct from actual participant Entra access or
+Defender cloud reporting. See [automation diagnostics and limits](../hosted-events/readme.md#complete-localbox-preparation).
+
+Run `Invoke-Pester ./global-localbox.tests.ps1 -Output Detailed` for offline
+coverage of the Console's exact global-hook signature, cost/schema opt-in, one
+LocalBox deployment followed by two subscription preparations, all-event RBAC,
+shared subscription/resource-group discovery outputs, regional fallback, reuse,
+context guards and failure propagation without publishing success credentials.
+Participant RBAC regressions cover reuse of the global Security Reader grant,
+creation when absent, rejecting unrelated-scope/user/role matches, and read-error
+propagation. This prevents `RoleAssignmentExists` when the global hook's
+assignment ID differs from the participant Bicep template's deterministic ID.
+The preparation, hosted-tag-policy, hosted-defender and shared-AKS suites also
+cover the relocated wiring and unchanged per-subscription setup.
+
+For integration, re-import the content pack and provision a fresh event spanning
+at least two subscriptions with organizer approval (the normal one-lab smoke test
+cannot verify cross-subscription access). Confirm exactly one global job and
+LocalBox, separate shared preparation jobs, identical global discovery credentials
+for all labs, and a participant in the other subscription creating/managing their
+own VM against the shared custom location. Verify reference-VM Defender visibility,
+Entra AKS proxy access, distinct team namespaces and teardown ordering. These are
+live integration gates; offline tests do not establish Console execution or
+cross-subscription Azure resource-linking behavior.
+
+### Observed TEST4 integration results
+
+The 24 October 2026 Console log for `NO-SovCloud-Oct24-TEST4` showed one completed
+global deployment in **traininglab-59**, completed subscription preparation in
+**traininglab-12** and **traininglab-59**, and **4/4** completed participant jobs.
+The two participants in the host subscription reused their existing Security
+Reader grants without a role-assignment collision.
+
+On **25 October 2026**, the organizer signed in as **labuser-0027** and successfully
+created VM **labuser-0027** in **traininglab-12 / rg-labuser-0027**, using LocalBox
+in **traininglab-59 / rg-localbox-shared**. The portal initially selected the
+LocalBox subscription; switching it to the participant subscription exposed the
+participant's original resource group while retaining the shared custom location
+and image. See the [wizard example](../../walkthrough/challenge-06/images/localbox-cross-subscription-basics.png).
+
+<a href="../../walkthrough/challenge-06/images/localbox-cross-subscription-complete.png"><img src="../../walkthrough/challenge-06/images/localbox-cross-subscription-complete.png" alt="Completed Azure Local VM deployment for labuser-0027 in traininglab-12 and rg-labuser-0027." width="800" /></a>
+
+This is live evidence for **portal VM creation across subscriptions** with the
+tested participant permissions, not blanket validation of every Azure CLI
+operation. Guest management was selected during creation, but connected guest
+status, Defender onboarding/assessments, Update Manager results, AKS proxy access
+and teardown still require their separate checks. No second participant resource
+group or shared-RG VM placement is needed for the tested creation flow.
+
+## Reference-VM checks
+
+Run `Invoke-Pester ./prepare-localbox.tests.ps1 -Output Detailed` for the offline
+preparation and capacity regression suite. Reference-VM tests cover default inclusion, explicit opt-out and WhatIf,
+the 15-character Windows name limit, generated credentials, encrypted-file lifecycle
+(mocked offline), retry reuse, persistence failures, no credential access on
+reuse/WhatIf/opt-out, optional NIC response names with strict subnet/count checks, resource reuse and
+conflicts, periodic assessment configuration, and pending/failed MDE status.
+The shared VM submission tests check secure parameter-file transport and cleanup,
+error redaction, and an ARM preview restricted to three new VM resources.
+
+When the preparation manifest contains `ReferenceVm`, the live LocalBox health
+suite additionally checks the expected machine/NIC/instance, running state, Arc
+connection, MDE installation and periodic assessment mode. Older manifests without
+that optional entry retain the normal test set. These checks do **not** verify
+ongoing Defender device reporting or completed Defender/Update Manager results;
+perform the [organizer reference readiness checks](../localbox/readme.md#reference-readiness-and-participant-use)
+before the workshop.
+
+On 2026-10-21, read-only validation against an existing running reference VM passed
+with the IP-configuration name absent from the actual NIC response. Arc was
+Connected and periodic assessment was enabled; MDE was still Pending. Separately,
+Azure Run Command on LocalBox-Client verified real Windows DPAPI credential
+round-trip, restricted directory/file ACLs, unchanged retry reuse and rejection
+of a different resource ID. This test ran as SYSTEM against a disposable test
+file and removed it afterwards; it did not reset the reference VM's password.
+An interactive organizer-account run and fresh creation using the generated
+credential remain end-to-end integration checks.
+
+## Preparation recovery and ordering checks
+
+Default/preflight tests verify that no manual address-reservation switch is
+required for the standard greenfield topology, while configured gateway,
+infrastructure-address, AKS/VIP and VLAN conflicts still stop preparation.
+
+The same offline suite checks the standard nonprompting confirmation impact,
+continued support for explicit `-Confirm`/`-WhatIf`, and safe recovery of matching
+Failed Marketplace images, conflicting-image protection, bounded deletion waits,
+and a single import attempt per run. Image-version tests cover numeric selection
+from the cluster-scoped Edge Marketplace catalog, explicit version validation,
+malformed/unavailable catalogs, discovery before deletion, unchanged reuse of
+working images, and verification of the actual imported version. The resolver was
+also run read-only against the live cluster catalog on 2026-10-21; it selected
+`26100.33438.260905`, while Azure Compute exposed the newer `26100.33650.261013`.
+It executes the preparation workload sequence with mocked Azure calls to verify
+that shared storage and networks precede workload provisioning. Fresh AKS creation
+uses `--no-wait` after synchronous validation, overlaps the image import, and then
+joins AKS readiness/Arc connectivity/MetalLB before creating the reference VM.
+Tests cover submission, validation, image and AKS failures; existing-AKS reuse;
+`-SkipAks`; `-WhatIf`; and the explicit `-SequentialProvisioning` fallback.
+Image import still uses the existing version, placement and failed-image recovery
+guards. A cold live deployment is needed to measure actual overlap and contention;
+mocked ordering is not a performance benchmark.
+Read-only verification on traininglab-02 confirmed that the installed `aksarc`
+extension advertises `create --no-wait`; no provisioning was invoked by that check.
+TEST12 subsequently exposed an actual `aksarc` 1.5.117 race: the command submitted
+ARM deployment, then immediately read the not-yet-created cluster and returned
+`ResourceNotFound`. New tests require a new, scoped ARM correlation before
+reconciling this specific submission error; stale/missing receipts, mismatched
+parameters, failed/canceled states, unrelated 404s and unreadable evidence fail.
+Existing accepted deployments can overlap image import without another create,
+while completed/legacy deployments retain their prior ordering. The actual
+receipt helper was verified read-only against the still-running TEST12
+deployment; this does not establish final AKS or Full health readiness.
+The focused preparation and automation suites passed **501 tests** after the
+complete five-file guest source pin was synchronized with this change.
+
+Storage tests verify no repeated disk/partition mutations on a completed rerun,
+resumption of an interrupted partition expansion, and detection of unallocated
+space without calling `Get-PartitionSupportedSize` on an already expanded
+partition. The alignment/GPT allowance is tested at and above 1 MiB. Live
+LocalBox validation is still required for actual Windows storage behavior and
+Marketplace failure recovery.
+
+## Hosted Defender unit tests
+
+Run `Invoke-Pester ./hosted-defender.tests.ps1 -Output Detailed` for the focused
+offline suite. It mocks Azure REST calls and covers Free/P1 to P2 setup, Endpoint
+protection, subscription-context guards, preservation of existing pricing settings,
+reruns, authorization/HTTP errors, malformed responses, independent read-back,
+bounded propagation and shared-hook wiring. These tests do not enable paid plans.
+
+The Endpoint protection API was tested off/on in an authorized test subscription
+on 2026-10-19 and restored to enabled, without changing its existing P1 plan.
+On 2026-10-20, after a successful fresh Console deployment, the signed-in
+participant `labuser-0007` independently read `Standard` / `P2` and
+`WDATP.properties.enabled=true` in `traininglab-57`. No Defender settings were
+changed during verification. Individual VM extension/device onboarding remains
+a separate acceptance check.
+
+### Participant policy-permission validation
+
+The same participant had Owner on `rg-labuser-0007` and subscription-level
+Resource Policy Contributor and Security Reader, without subscription Owner or
+User Access Administrator. Using that account, the live test successfully:
+
+- Created a subscription-level custom modify definition and an RG-scoped assignment
+  with a system-assigned managed identity.
+- Granted that identity Contributor on the participant RG.
+- Remediated a pre-existing empty storage account and independently read back
+  `DataClassification=Sovereign`, preserving its other tags. The test definition
+  restricted modification to that exact storage account, not existing lab resources.
+
+The initial `ReEvaluateCompliance` task remained in `Evaluating` during observation,
+even after the account appeared as NonCompliant. It was canceled and its canceled
+state confirmed before retrying with `ExistingNonCompliant`. The retry succeeded
+with one successful deployment and zero failures. This verifies the participant
+permissions and actual remediation, not completion of the original evaluation task.
+
+The test account, both remediation tasks, assignment, custom definition and
+identity role assignment were removed afterward; existing lab resources were
+preserved. The Task 3 built-in require-tag policy was separately confirmed to use
+`deny`, which does not support automatic remediation. These findings do not
+establish the historical assignment or permissions in `traininglab-11`.
+
+## Hosted tag-policy unit tests
+
+From this directory, run `Invoke-Pester ./hosted-tag-policy.tests.ps1 -Output Detailed`. These offline tests mock all Azure and Console commands. They cover hosted-only wiring, subscription targeting, tag-policy propagation, both tag values on resources and resource groups, preservation of unrelated tags, bounded failure, and temporary probe cleanup. Compile the initiative separately with `az bicep build --file ../../labautomation/infra/hosted-tag-policy.bicep --stdout`.
+
+The mocks preserve Azure PowerShell's different output shapes: resource groups expose `Tags`, while network security groups expose `Tag`. A Console run on 2026-09-29 exposed a false timeout caused by reading `Tags` from both. Regression tests reproduce that failure with the old check and verify the corrected check, including null tag collections and target-specific timeout diagnostics. The probe still requires both control tags and the purpose tag, and does not bypass genuine propagation failures.
+
+Each fresh hosted environment must pass the setup's live tag-policy probe. The validation below covers a participant-created Key Vault and a manually created storage account. No existing-resource remediation or BYOS policy deployment is part of this test.
+
+### Live validation
+
+On 2026-09-29, the initiative and assignment were deployed using Azure CLI in a hosted test subscription. A new empty Key Vault in an existing participant resource group was created with only `MicroHackPurpose=HostedTagPolicyLiveTest`; a separate read confirmed `SecurityControl=Ignore`, `CostControl=Ignore`, and preservation of the purpose tag. The existing resource group lacked `SecurityControl`, demonstrating subscription-policy application rather than inheritance from that group's tags. No remediation roles were granted to the assignment identity.
+
+The test vault was deleted and its soft-deleted state verified, with seven-day purge-protected retention. The assignment was left deployed; existing participant resources and resource-group tags were not changed. Fresh resource-group creation was blocked by the participant identity's permissions, so that test did not validate resource-group tagging or the PowerShell setup probe.
+
+Live deployment also established that this subscription supports policy API version `2026-06-01`, not `2026-07-01`, and requires a managed identity for the modify assignment even without remediation. The template and offline tests reflect both requirements; a successful what-if alone did not catch either deployment failure.
+
+On 2026-09-30, the organizer reported a successful fresh Console deployment after the probe fix. The supplied Console output for `traininglab-18` shows one retry for missing NSG control tags, followed by successful verification for both resource groups and resources and continuation to shared LocalBox deployment. This closes the outstanding organizer-level live probe validation.
+
+The organizer also manually created a storage account in `rg-labuser-0011` and observed both tags being applied automatically. The supplied portal screenshot confirms `SecurityControl=Ignore` and `CostControl=Ignore`. Together with the earlier Key Vault test, this validates automatic tag application beyond resources created by the lab scripts. Downstream MCAPS processing was not tested.
+
+## Download without cloning
+
+Download [test-sovereign-cloud.ps1](../test-sovereign-cloud.ps1) from the same trusted ref as preparation. `-DownloadTests` defaults to `$true`: every run downloads the helpers and two suites to a temporary directory and prints the repository/ref being used. Internet access is required unless you pass `-DownloadTests:$false` with a complete local checkout. `-GitHubRef` must identify the **same reviewed ref** as the runner, preferably a commit SHA; it defaults to `main`. Downloaded scripts execute under your privileges, so review and pin them. Download failures stop the run rather than silently falling back to other code.
+
+For a fork, also specify `-GitHubRepository 'owner/MicroHack'`. For example, use `-GitHubRepository 'janegilring/MicroHack' -GitHubRef '<reviewed-full-commit-sha>'`, replacing the placeholder with the published commit containing both the runner and suites. Do not assume an old test branch or moving `main` contains the content imported into Console. The default repository remains `microsoft/MicroHack`. Hosted packaging has its own [immutable source-pin promotion contract](../hosted-events/readme.md#source-pins-and-upstream-promotion).
+
+```powershell
+$ref = 'main'
+$base = "https://raw.githubusercontent.com/microsoft/MicroHack/$ref/03-Azure/01-03-Infrastructure/01_Sovereign_Cloud/resources"
+Invoke-WebRequest "$base/test-sovereign-cloud.ps1" -OutFile './test-sovereign-cloud.ps1'
+./test-sovereign-cloud.ps1 -Scope LocalBox -Mode ControlPlane `
+    -LocalBoxManifestPath 'C:\LocalBox\sovereign-localbox.json' -GitHubRef $ref
+```
+
+For a checkout, pass `-DownloadTests:$false` explicitly to use its local helpers and suites. Omitting the switch now downloads tests.
+
+## Full LocalBox check
+
+Keep a reviewed [prepare-localbox.ps1](../prepare-localbox.ps1) from the same ref beside the runner. The following builds the nested credential locally without printing the installed configuration; use `Get-Credential` instead if that account has been rotated. The health runner still requires the explicit `-NodeCredential` argument.
+
+```powershell
+. ./prepare-localbox.ps1
+$nodeCredential = Resolve-LocalBoxNodeCredential -Configuration (Import-PowerShellDataFile -LiteralPath $env:LocalBoxConfigFile)
+./test-sovereign-cloud.ps1 -Scope LocalBox -Mode Full `
+    -LocalBoxManifestPath 'C:\LocalBox\sovereign-localbox.json' `
+    -NodeCredential $nodeCredential -GitHubRef $ref
+```
+
+  This example uses the default `$HOME/.kube/config`. Use `-LocalBoxKubeconfig 'C:\LocalBox\aks-local.kubeconfig'` for a dedicated file instead. Changing the defaults does not authenticate kubectl or start the Arc proxy.
+
+Checks cover the Client and bootstrap, cluster/Arc bridge/custom location/AKS extension, supporting Azure resources, image download/storage placement, exact network settings, expected AKS topology/admin group, nested-node/storage health and capacity, Kubernetes node readiness and system pods/controllers. Gateway/DNS/HTTPS probes run from a nested node; these do not prove connectivity from a participant VM that has not yet been created.
+
+## Rerun from a local copy
+
+In elevated PowerShell 7 on LocalBox-Client, change to your local resources directory containing the runner, preparation script and `tests` folder. The offline unit suite also requires the sibling `labautomation` folder, including `localbox-credentials.ps1`, from the same checkout; it mocks the Console helpers and makes no live deployment calls. Use the manifest written by preparation (`-ManifestPath`, default `C:\LocalBox\sovereign-localbox.json`) and an existing authenticated kubeconfig. Keep all scripts from the same reviewed revision; do not overwrite unpublished local fixes with an older download.
+
+The commands below retain your existing Azure CLI authentication. Confirm that it has access to the selected lab resources as described in [Tooling and authentication](#tooling-and-authentication).
+
+```powershell
+$manifestPath = Read-Host 'Path to the manifest written by prepare-localbox.ps1'
+$kubeconfigPath = Read-Host 'Path to your authenticated AKS kubeconfig'
+$outputDirectory = Join-Path (Get-Location) 'health-results'
+Import-Module Pester -RequiredVersion 5.7.1
+Invoke-Pester .\tests\prepare-localbox.tests.ps1 -Output Detailed
+
+. .\prepare-localbox.ps1
+$nodeCredential = Resolve-LocalBoxNodeCredential -Configuration (Import-PowerShellDataFile -LiteralPath $env:LocalBoxConfigFile)
+.\test-sovereign-cloud.ps1 -Scope LocalBox -Mode Full `
+  -LocalBoxManifestPath $manifestPath `
+  -LocalBoxKubeconfig $kubeconfigPath `
+  -NodeCredential $nodeCredential -OutputDirectory $outputDirectory -DownloadTests:$false
+Get-Content (Join-Path $outputDirectory 'health.json')
+```
+
+Use a group-member kubeconfig to exercise Entra-based access. An explicitly supplied cluster-admin certificate can verify Kubernetes runtime health, but **not Entra group-member sign-in**. Restrict kubeconfig file access and never publish its contents. The health suite only reads the supplied credential; it does not create a kubeconfig, retrieve credentials or grant roles.
+
+After an intentional scale operation, the manifest must contain the new expected worker count. Preparation defaults to one control-plane node and three workers. Use `-NodeCount` to override the worker count; preparation does not silently scale an existing cluster whose configuration differs.
+
+## Participant lab inventory
+
+Create a local JSON inventory with one entry for every lab to validate. Use the actual successful `sovereign-lab-*` deployment name, not the subscription-level RBAC deployment name. Paths must resolve on the test machine.
+
+```json
+{
+  "Labs": [
+    {
+      "SubscriptionId": "00000000-0000-0000-0000-000000000001",
+      "ResourceGroupName": "rg-your-lab",
+      "DeploymentName": "sovereign-lab-your-successful-deployment",
+      "AksKubeconfig": "C:\\LocalBox\\azure-aks.kubeconfig",
+      "K3sKubeconfig": "C:\\LocalBox\\k3s.kubeconfig"
+    }
+  ]
+}
+```
+
+For manual deployments without retained deployment records, replace `DeploymentName` with an `Outputs` object containing the plain nonsecret output values from [sovereign-lab.bicep](../../labautomation/sovereign-lab.bicep). Missing required outputs fail. The runner does not treat whatever happens to exist as the expected inventory.
+
+```powershell
+./test-sovereign-cloud.ps1 -Scope ParticipantLabs -InventoryPath './inventory.json' `
+    -Mode Full -AllowGuestRunCommand -GitHubRef $ref
+```
+
+`-AllowGuestRunCommand` permits Azure VM Run Command on the selected K3s VM solely to check K3s service state, DNS and HTTPS egress. This transport is an Azure management action and requires scoped Run Command permission even though the guest commands are read-only. It can create transient Run Command execution artifacts. Without consent, that mandatory Full check fails; it is not silently skipped.
+
+Participant baseline checks cover K3s VM power/agent/install/runtime health, two system and two labeled Ubuntu confidential AKS nodes, OIDC/workload identity/Istio and upgrade settings, and private networking/NSG/NAT/Bastion configuration. They no longer require a standalone CVM or custom attestation provider. Challenge 4 ACI/ACR, Challenge 5 applications, Bastion interactive access and actual signed attestation exchanges are participant smoke tests, not claims made by baseline ARM health checks.
+
+For both paths together, use `-Scope All`, supply the participant inventory and LocalBox manifest/kubeconfig/Windows credential. Use an operator context authorized for all specified scopes, not a newly broadened managed identity.
+
+## Results
+
+- `health-results/health.xml`: NUnit-format Pester test report with failure detail.
+- `health-results/health.json`: names/results/counts and a `FullReadiness` flag; no passwords or kubeconfig contents.
+- Nonzero exit: a failure, or incomplete Full coverage. Missing credentials/permissions/connectivity is not a healthy result.
+- A successful `ControlPlane` run is explicitly partial and never sets `FullReadiness`. Full readiness covers the checks described above, not application functionality or uncreated student resources.
+
+Readiness retries use `-TimeoutMinutes` per check (default 15 minutes). The runner prints each Kubernetes query, then reports the failed condition, attempt number and remaining time before each 15-second retry. Nodes can be Ready while a system pod, Deployment or DaemonSet is not; the same test verifies all of them. Authorization errors stop without retrying.
+
+DaemonSets are checked against their desired scheduling count. Windows-only DaemonSets such as `calico-node-windows` can legitimately report zero desired and zero Ready pods on a Linux-only cluster; that is not a failure. Missing scheduling status or fewer Ready pods than desired still fails. An older runner that reports a zero-target DaemonSet as unavailable needs the corrected runner and downloaded helpers from the same ref, not deletion of the DaemonSet or a longer timeout.
+
+Each kubectl API request uses `--request-timeout=20s`. The readiness deadline is checked between attempts, not as a hard process timeout; an external authentication plugin can take longer or require attention. If the last query stays on screen without retry messages, check the proxy terminal and authentication state. In a separate terminal, inspect the same kubeconfig without changing its context:
+
+```powershell
+kubectl --kubeconfig "$HOME/.kube/config" --request-timeout=20s get nodes
+kubectl --kubeconfig "$HOME/.kube/config" --request-timeout=20s get pods -A
+kubectl --kubeconfig "$HOME/.kube/config" --request-timeout=20s get deployments,daemonsets -n kube-system
+```
+
+Use your explicit kubeconfig path instead when testing a dedicated file. Secure the reports as operational metadata; underlying tool errors in XML may include resource IDs and tenant information. Retest after resolving failures rather than mutating infrastructure from the health suite.
+
+## Offline regression tests
+
+```powershell
+Invoke-Pester ./tests/prepare-localbox.tests.ps1 -Output Detailed
+Invoke-Pester ./tests/shared-aks.tests.ps1 -Output Detailed
+```
+
+Run from the resources directory. These suites test LocalBox validation/reconciliation and shared-AKS workload targeting, namespace ownership, cleanup safety, pool compatibility and quota contracts. They need no Azure login or infrastructure. Do not run the entire tests folder by default: the two `*.health.tests.ps1` suites require runner-supplied data and live access.

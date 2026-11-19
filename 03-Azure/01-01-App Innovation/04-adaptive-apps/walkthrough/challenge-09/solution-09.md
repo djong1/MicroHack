@@ -1,10 +1,16 @@
 # Walkthrough Challenge 09 - Adapt AI Services
 
-[< Previous Solution](../challenge-08/solution-08.md) - **[Home](../../Readme.md)** - [Next Solution](../challenge-10/solution-10.md)
+[< Previous Solution](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/walkthrough/challenge-07/solution-07.md) - **[Home](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/Readme.md)** - [Next Solution](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/walkthrough/challenge-10/solution-10.md)
 
 Duration: 60-90 minutes
 
 ## Coach notes
+
+This is an optional extension, not part of the hosted baseline. Arrange an
+approved existing Azure OpenAI deployment and inference-role assignment access.
+Hosted participants use Bash and source `artifacts/console-env.sh` in each new
+terminal; keep the discovered lab resource group. Challenge 08 is not yet
+published and is not required.
 
 The source Student Challenge 09 contains only generic challenge boilerplate, and its
 Coach Solution 09 is empty. This walkthrough reconstructs the intended **Adapt AI
@@ -137,7 +143,7 @@ Restore the tunnel after every devcontainer restart.
 **Bash:**
 
 ```bash
-export AZURE_SUBSCRIPTION="<subscription-id>"
+export AZURE_SUBSCRIPTION="${AZURE_SUBSCRIPTION:-<subscription-id>}"
 bash resources/prepare-k3s-azure-vm.sh connect
 export KUBECONFIG="$HOME/.kube/adaptive-apps-k3s.yaml"
 
@@ -526,8 +532,8 @@ name.
 **Bash:**
 
 ```bash
-export AZURE_SUBSCRIPTION="<subscription-id>"
-export RESOURCE_GROUP="rg-adaptive-apps"
+export AZURE_SUBSCRIPTION="${AZURE_SUBSCRIPTION:-<subscription-id>}"
+export RESOURCE_GROUP="${RESOURCE_GROUP:-<lab-resource-group>}"
 export AKS_NAME="aks-adaptive-apps"
 export OPENAI_RESOURCE_GROUP="<existing-openai-resource-group>"
 export OPENAI_ACCOUNT="<existing-openai-account>"
@@ -585,7 +591,9 @@ test "$WORKLOAD_IDENTITY_ENABLED" = "true"
 
 ```powershell
 $env:AZURE_SUBSCRIPTION = "<subscription-id>"
-$env:RESOURCE_GROUP = "rg-adaptive-apps"
+if (-not $env:RESOURCE_GROUP) {
+    $env:RESOURCE_GROUP = "<lab-resource-group>"
+}
 $env:AKS_NAME = "aks-adaptive-apps"
 $env:OPENAI_RESOURCE_GROUP = "<existing-openai-resource-group>"
 $env:OPENAI_ACCOUNT = "<existing-openai-account>"
@@ -1124,7 +1132,9 @@ together.
 
 The frontend can reach the newly created `ai-agent` service by its stable Radius
 container name. Challenge 09 does not redeploy `iac/app.bicep`, so Challenge 07's
-target-specific OIDC client secret and broker configuration are not overwritten.
+target-specific OIDC client secret and broker configuration are not overwritten. The
+Challenge 06 `trading-db` and its Azure PostgreSQL server also remain in place; no
+AI-recipe change is needed for the PostgreSQL naming correction.
 
 ## Optional cleanup
 

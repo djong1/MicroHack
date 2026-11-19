@@ -3,14 +3,23 @@ title: Walkthrough Challenge 07 - Adapt Identity Services
 description: Prove one frontend OIDC contract with local Keycloak users and Entra SAML federation.
 ---
 
-[< Previous Solution](../challenge-06/solution-06.md) - **[Home](../../Readme.md)** - [Next Solution](../challenge-08/solution-08.md)
+[< Previous Solution](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/walkthrough/challenge-06/solution-06.md) - **[Home](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/Readme.md)** - [Next Solution](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/walkthrough/challenge-09/solution-09.md)
 
 Duration: 60-90 minutes. The shorter path reduces copying; a new completion-time
 estimate requires a learner pilot.
 
 ## 1. Understand the contract and check your starting point
 
-The application always speaks OIDC. You change the user authority behind Keycloak:
+This is optional after hosted Challenge 06. Confirm organizer support for Entra
+enterprise-app/SAML administration; lab resource-group Owner alone is insufficient.
+Hosted participants use Bash and source `artifacts/console-env.sh` in each new
+terminal. Browser port-forwards and OIDC need the
+[hosted-browser considerations](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/docs/console-setup.md#optional-extensions-and-hosted-browsers).
+Continue directly to 09: 08 is not yet published.
+
+This challenge is about **end-user authentication**. It does not replace the federated
+identity Radius uses to deploy Azure resources, and it does not complete the workload
+identity and authorization needed by Event Grid MQTT.
 
 ```text
 K3s: frontend --OIDC--> Keycloak --> local-trader
@@ -61,7 +70,7 @@ enable AI, or extend MQTT authorization for this challenge.
 Reconnect after a devcontainer restart, then select both targets explicitly:
 
 ```bash
-export AZURE_SUBSCRIPTION="<subscription-id>"
+export AZURE_SUBSCRIPTION="${AZURE_SUBSCRIPTION:-<subscription-id>}"
 bash resources/prepare-k3s-azure-vm.sh connect
 export KUBECONFIG="$HOME/.kube/adaptive-apps-k3s.yaml"
 kubectl config use-context k3s-azure-vm
@@ -210,7 +219,24 @@ the frontend remains an OIDC client.
 
 ## 5. Deploy and prove Entra-backed sign-in
 
-In your command terminal, with the AKS target still selected:
+Use the AKS client secret captured in Stage 3, step 2. The endpoint values match K3s
+because both portfolios use the same service and realm names; the secret and upstream
+provider differ.
+
+> [!IMPORTANT]
+> This redeploys `iac/app.bicep`, so the Azure PostgreSQL recipe runs again. Keep the
+> same recipe registration used for the healthy Challenge 06 deployment. Record the
+> database host before deploying, then confirm it is unchanged afterward:
+>
+> ```bash
+> rad resource show Radius.Resources/postgreSqlDatabases trading-db \
+>   --workspace ws-azure-prod --group rg-trading --output json | jq -r '.properties.host'
+> ```
+>
+> A different host means a replacement server, not a rename. Stop and follow the
+> recipe-version guidance in Challenge 05 before continuing.
+
+**Bash:**
 
 ```bash
 bash resources/configure-identity.sh aks deploy
@@ -276,9 +302,151 @@ policy, assignment, claims and lifecycle.
 Use the [manual troubleshooting reference](../../docs/identity-manual.md#troubleshooting-by-layer)
 for the next check; never weaken authentication to pass the lab.
 
-Stop both forwards with <kbd>Ctrl</kbd>+<kbd>C</kbd>. Remove only your workshop Entra
-assignments/application when no longer needed, following your organization's change
-process. Do not delete the shared brokers, clusters or Radius resources.
+### K3s reports connection refused on `127.0.0.1:16443`
+
+The devcontainer restarted and the Bastion process is no longer running:
+
+```bash
+export AZURE_SUBSCRIPTION="${AZURE_SUBSCRIPTION:-<subscription-id>}"
+bash resources/prepare-k3s-azure-vm.sh connect
+export KUBECONFIG="$HOME/.kube/adaptive-apps-k3s.yaml"
+kubectl config use-context k3s-azure-vm
+```
+
+In PowerShell, set `$env:AZURE_SUBSCRIPTION`, invoke the same script through `bash`,
+and set `$env:KUBECONFIG`.
+
+### Local port 8080 or 3000 is already in use
+
+Stop the stale foreground `kubectl port-forward` or `rad resource expose` process with
+<kbd>Ctrl</kbd>+<kbd>C</kbd>. Do not kill processes by name. Confirm the intended
+Kubernetes context and Radius workspace before starting a replacement.
+
+### The frontend shows no OIDC sign-in option
+
+Check that `rad deploy` received a non-empty client ID and secret. Inspect only
+environment-variable names with a JSONPath that cannot render their values. Review
+frontend pod logs for the non-secret `OIDC disabled: missing config` diagnostic; never
+dump all environment values.
+
+**Bash:**
+
+```bash
+kubectl get deployment frontend \
+  --namespace "$APP_NAMESPACE" \
+  --output jsonpath='{.spec.template.spec.containers[?(@.name=="frontend")].env[*].name}'
+echo
+```
+
+**PowerShell 7:**
+
+```powershell
+kubectl get deployment frontend `
+    --namespace $AppNamespace `
+    --output jsonpath='{.spec.template.spec.containers[?(@.name=="frontend")].env[*].name}'
+Write-Output ""
+```
+
+### Keycloak reports an invalid redirect URI
+
+The client must include `http://localhost:3000/*`, while `appBaseUrl` must be
+`http://localhost:3000`. Keep the callback generated by the frontend at
+`/auth/oidc/callback`.
+
+### The browser cannot reach the authorization endpoint
+
+The browser endpoint must use `http://localhost:8080`. Cluster-local
+`core-keycloak.core.svc.cluster.local` addresses are only for frontend-to-Keycloak
+token and user-info calls.
+
+### Login succeeds at Keycloak but the callback fails
+
+Check:
+
+1. Keycloak client secret matches the active control plane.
+2. Internal issuer, token, and user-info endpoints use the `core-keycloak` service.
+3. Frontend and Keycloak forwards belong to the same cluster stage.
+4. The frontend callback is on the current port-3000 exposure.
+
+Do not copy the other cluster's client secret as a shortcut.
+
+### Entra authenticates the user but denies application access
+
+Check the enterprise application's **Users and groups** assignments and
+**Assignment required** setting. Assign the intended test identity; do not disable
+assignment globally just to pass the workshop.
+
+### Keycloak does not show the Entra option
+
+Verify the SAML provider is enabled, has alias `entra`, and imported metadata from the
+intended tenant. Check that the Keycloak forward is still attached to
+`aks-adaptive-apps`, not K3s.
+
+### Entra reports a reply URL mismatch
+
+For this lab the reply URL is exactly:
+
+```text
+http://localhost:8080/realms/master/broker/entra/endpoint
+```
+
+The alias is part of the URL. A production HTTPS hostname requires corresponding changes
+in Entra, Keycloak, the OIDC browser endpoint, redirect origins, and application base
+URL.
+
+### Entra reports that the identifier is already in use
+
+Another workshop application in the tenant already owns the SAML entity ID. Choose a
+different `<team-id>`, then update both the Entra **Identifier (Entity ID)** and
+Keycloak **Service provider entity ID** to the same unique
+`urn:adaptive-apps:keycloak:<team-id>` value.
+
+### The callback fails intermittently with an invalid authorization code
+
+The portfolio runs multiple Keycloak replicas. Check both Keycloak pod logs for a
+healthy Infinispan/JGroups cluster view. The browser forward can stay pinned to one pod
+while the frontend token request reaches another through `core-keycloak`; a broken
+Keycloak cache cluster makes authorization codes appear invalid on alternate requests.
+Repair Keycloak clustering rather than weakening OIDC validation.
+
+### A later portfolio upgrade breaks admin CLI authentication
+
+`core-keycloak-admin` is managed by Helm. Re-running the Challenge 04
+`helm upgrade --install core` command with the original chart values can restore the
+old Kubernetes Secret while the Keycloak database retains the rotated password. Repeat
+the target-specific administrator rotation with approved values after a portfolio
+upgrade; do not print or recover the old password from command output.
+
+### Do not use token output as evidence
+
+Tokens, authorization codes, cookies, client secrets, and passwords are credentials.
+Validate user identity in the frontend and use non-secret configuration metadata. Do
+not paste tokens into JWT inspection sites or workshop notes.
+
+## Optional enterprise local-directory extension
+
+If a local AD DS deployment already exists, Keycloak can replace the local workshop
+user source with LDAP federation:
+
+1. Use `ldaps://<domain-controller>:636`; do not use cleartext LDAP.
+2. Mount the issuing CA into Keycloak's trust store.
+3. Use a dedicated read-only bind account stored in an approved secret store.
+4. Scope the users DN and group search to the workshop organizational units.
+5. Use read-only edit mode and test connection, authentication, and user sync.
+6. Validate an AD user through the full frontend OIDC flow.
+
+Do not claim this extension is complete when only TCP connectivity or user import works.
+Certificate validation, credential protection, group mapping, account lifecycle, and an
+end-to-end sign-in are part of the identity boundary.
+
+## Cleanup
+
+Stop foreground port-forwards with <kbd>Ctrl</kbd>+<kbd>C</kbd>. Remove only
+workshop-scoped Entra assignments or the non-gallery enterprise application when it is
+no longer needed, following your organization's change process. Do not delete shared
+Keycloak, Radius, AKS, K3s, or Bastion resources as part of this challenge.
+
+For the K3s Bastion tunnel itself:
 
 ```bash
 bash resources/prepare-k3s-azure-vm.sh status

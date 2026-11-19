@@ -1,0 +1,1804 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.41.2.15936",
+      "templateHash": "1413310816187321949"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Azure region for all resources. Validated for Foundry model availability."
+      }
+    },
+    "resourceToken": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Deterministic suffix for resource naming (DNS-safe, lowercase)."
+      }
+    },
+    "foundryNameSuffix": {
+      "type": "string",
+      "defaultValue": "",
+      "maxLength": 6,
+      "metadata": {
+        "description": "Extra suffix appended to the two Azure AI Foundry account names only.\nAn `AIServices` account with `allowProjectManagement` is backed by a hidden AML\n(`AmlRp`) workspace. Deleting the account soft-deletes that workspace for ~14 days,\nand purging the Cognitive Services account does NOT purge it -- Azure exposes no API\nto list or purge it at all. The account name is therefore unusable for two weeks after\nany delete: recreating it always lands in `provisioningState: Failed` with\n\"Soft-deleted workspace exists. Please purge or recover it.\".\nBecause `resourceToken` is derived from subscription id + resource group name and the\nplatform reuses both, every re-run of an event would otherwise be guaranteed to fail.\n`labautomation/deploy-lab.ps1` supplies a fresh suffix whenever the previous account is\nnot healthy, and reuses the existing one when it is. Foundry accounts are the only\nresources affected: Key Vault and APIM purge correctly and keep their stable names."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Tags to apply to all resources."
+      }
+    },
+    "modelCapacity": {
+      "type": "int",
+      "defaultValue": 20,
+      "minValue": 1,
+      "maxValue": 500,
+      "metadata": {
+        "description": "TPM capacity (thousands of tokens/min) for each chat + embedding model\ndeployment. Sized so that a full subscription of labs fits inside the default\nCognitive Services GlobalStandard quota: the platform packs `labsPerSubscription`\n(8) labs into one subscription and region, so the per-region cost of this lab is\n`modelCapacity x 5 x 8`. At the default of 20 that is 800 of the typical 1000-unit\nper-model quota, leaving headroom for other labs sharing the subscription. Raise it\nonly after confirming quota with `az cognitiveservices usage list -l <region>`."
+      }
+    }
+  },
+  "variables": {
+    "copy": [
+      {
+        "name": "llmSupportedModels",
+        "count": "[length(variables('aiFoundryModels'))]",
+        "input": {
+          "name": "[variables('aiFoundryModels')[copyIndex('llmSupportedModels')].name]",
+          "sku": "[variables('aiFoundryModels')[copyIndex('llmSupportedModels')].sku]",
+          "capacity": "[variables('aiFoundryModels')[copyIndex('llmSupportedModels')].capacity]",
+          "modelFormat": "[variables('aiFoundryModels')[copyIndex('llmSupportedModels')].publisher]",
+          "modelVersion": "[variables('aiFoundryModels')[copyIndex('llmSupportedModels')].version]",
+          "retirementDate": "[variables('aiFoundryModels')[copyIndex('llmSupportedModels')].retirementDate]"
+        }
+      }
+    ],
+    "$fxv#0": "<fragment>\n    <!--\n        Lab placeholder for get-available-models.\n\n        Contract (must match the real fragment deployed by challenge 1):\n          reads  : allowedModels (optional, comma-separated)\n          writes : availableModels          - all deployments, JArray of objects\n                   availableFilteredModels  - the above filtered by allowedModels\n        It deliberately does NOT return a response, so callers stay identical\n        before and after challenge 1 replaces this fragment.\n    -->\n    <set-variable name=\"availableModels\" value=\"@{\n        JArray modelDeployments = new JArray();\n        modelDeployments.Add(new JObject(new JProperty(\"name\",\"gpt-4.1\"), new JProperty(\"id\",\"gpt-4.1\"), new JProperty(\"object\",\"model\"), new JProperty(\"modelFormat\",\"OpenAI\"), new JProperty(\"modelVersion\",\"2025-04-14\")));\n        modelDeployments.Add(new JObject(new JProperty(\"name\",\"gpt-5.4-mini\"), new JProperty(\"id\",\"gpt-5.4-mini\"), new JProperty(\"object\",\"model\"), new JProperty(\"modelFormat\",\"OpenAI\"), new JProperty(\"modelVersion\",\"2026-03-17\")));\n        modelDeployments.Add(new JObject(new JProperty(\"name\",\"gpt-5.2\"), new JProperty(\"id\",\"gpt-5.2\"), new JProperty(\"object\",\"model\"), new JProperty(\"modelFormat\",\"OpenAI\"), new JProperty(\"modelVersion\",\"2025-12-11\")));\n        modelDeployments.Add(new JObject(new JProperty(\"name\",\"text-embedding-3-large\"), new JProperty(\"id\",\"text-embedding-3-large\"), new JProperty(\"object\",\"model\"), new JProperty(\"modelFormat\",\"OpenAI\"), new JProperty(\"modelVersion\",\"1\")));\n        modelDeployments.Add(new JObject(new JProperty(\"name\",\"Mistral-Large-3\"), new JProperty(\"id\",\"Mistral-Large-3\"), new JProperty(\"object\",\"model\"), new JProperty(\"modelFormat\",\"Mistral AI\"), new JProperty(\"modelVersion\",\"1\")));\n        modelDeployments.Add(new JObject(new JProperty(\"name\",\"Phi-4\"), new JProperty(\"id\",\"Phi-4\"), new JProperty(\"object\",\"model\"), new JProperty(\"modelFormat\",\"Microsoft\"), new JProperty(\"modelVersion\",\"7\")));\n        return modelDeployments.ToString();\n    }\" />\n    <set-variable name=\"availableFilteredModels\" value=\"@{\n        JArray allModels = JArray.Parse((string)context.Variables[\"availableModels\"]);\n        string allowedModelsStr = context.Variables.ContainsKey(\"allowedModels\") ? (string)context.Variables[\"allowedModels\"] : \"\";\n        if (string.IsNullOrWhiteSpace(allowedModelsStr)) { return allModels.ToString(); }\n        var allowedSet = new HashSet<string>(allowedModelsStr.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(m => m.Trim()), StringComparer.OrdinalIgnoreCase);\n        JArray filteredModels = new JArray();\n        foreach (var model in allModels) {\n            string modelName = model[\"name\"]?.ToString() ?? \"\";\n            if (allowedSet.Contains(modelName)) { filteredModels.Add(model); }\n        }\n        return filteredModels.ToString();\n    }\" />\n</fragment>\n",
+    "$fxv#1": "<fragment>\n    <choose>\n        <when condition=\"@(context.Variables.GetValueOrDefault<string>(\"piiAnonymizationEnabled\") == \"true\")\">\n            <!-- Get configuration values -->\n            <set-variable name=\"piiConfidenceThreshold\" value=\"@(double.Parse(context.Variables.GetValueOrDefault<string>(\"piiConfidenceThreshold\", \"0.8\")))\" />\n            <set-variable name=\"piiEntityCategoryExclusions\" value=\"@(context.Variables.GetValueOrDefault<string>(\"piiEntityCategoryExclusions\", \"\"))\" />\n            <set-variable name=\"piiDetectionLanguage\" value=\"@(context.Variables.GetValueOrDefault<string>(\"piiDetectionLanguage\", \"en\"))\" />\n            <authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" output-token-variable-name=\"msi-access-token\" client-id=\"{{uami-client-id}}\" ignore-error=\"false\" />\n            \n            <!-- Process regex patterns if provided -->\n            <set-variable name=\"piiRegexMappings\" value=\"@{\n                var content = context.Variables.GetValueOrDefault<string>(\"piiInputContent\");\n                var regexPatterns = context.Variables.GetValueOrDefault<string>(\"piiRegexPatterns\");\n                var mappings = new JArray();\n                \n                if (!string.IsNullOrEmpty(regexPatterns))\n                {\n                    var patterns = JArray.Parse(regexPatterns);\n                    var categoryCounts = new Dictionary<string, int>();\n                    var processedTexts = new HashSet<string>(); // Track already processed texts\n                    \n                    foreach (var pattern in patterns)\n                    {\n                        var regex = new Regex(pattern[\"pattern\"].ToString());\n                        var category = pattern[\"category\"].ToString();\n                        \n                        if (!categoryCounts.ContainsKey(category))\n                        {\n                            categoryCounts[category] = 0;\n                        }\n                        \n                        var matches = regex.Matches(content);\n                        foreach (Match match in matches)\n                        {\n                            if (!string.IsNullOrEmpty(match.Value))\n                            {\n                                // Skip if we already have a mapping for this text\n                                if (processedTexts.Contains(match.Value))\n                                {\n                                    continue;\n                                }\n                                \n                                var placeholder = $\"<{category}_{categoryCounts[category]}>\";\n                                mappings.Add(new JObject {\n                                    [\"original\"] = match.Value,\n                                    [\"placeholder\"] = placeholder,\n                                    [\"source\"] = \"regex\"\n                                });\n                                categoryCounts[category]++;\n                                processedTexts.Add(match.Value); // Mark this text as processed\n                            }\n                        }\n                    }\n                }\n                return mappings.ToString();\n            }\" />\n\n            <!-- Apply regex-based masking -->\n            <set-variable name=\"piiRegexProcessedContent\" value=\"@{\n                var content = context.Variables.GetValueOrDefault<string>(\"piiInputContent\");\n                var mappings = JArray.Parse(\n                    context.Variables.GetValueOrDefault<string>(\"piiRegexMappings\"));\n                \n                foreach (var mapping in mappings)\n                {\n                    content = content.Replace(\n                        mapping[\"original\"].ToString(),\n                        mapping[\"placeholder\"].ToString()\n                    );\n                }\n                return content;\n            }\" />\n\n            <!-- Update input content for API processing -->\n            <set-variable name=\"piiInputContent\" value=\"@(context.Variables.GetValueOrDefault<string>(\"piiRegexProcessedContent\"))\" />\n            \n            <!-- Call PII Anonymization API -->\n            <send-request mode=\"new\" response-variable-name=\"piiAnalysisResponse\" timeout=\"20\" ignore-error=\"true\">\n                <set-url>@{\n                    var baseUrl = \"{{piiServiceUrl}}\".TrimEnd('/');\n                    return baseUrl + \"/language/:analyze-text?api-version=2026-05-01\";\n                }</set-url>\n                <set-method>POST</set-method>\n                <set-header name=\"Content-Type\" exists-action=\"override\">\n                    <value>application/json</value>\n                </set-header>\n                <set-header name=\"Authorization\" exists-action=\"override\">\n                    <value>@(\"Bearer \" + (string)context.Variables[\"msi-access-token\"])</value>\n                </set-header>\n                <!-- <set-header name=\"Ocp-Apim-Subscription-Key\" exists-action=\"override\">\n                    <value>{{piiServiceKey}}</value>\n                </set-header> -->\n\n                <set-body>@{\n                    var request = new JObject();\n                    request[\"kind\"] = \"PiiEntityRecognition\";\n                    request[\"parameters\"] = new JObject{\n                        {\"modelVersion\", \"latest\"},\n                        {\"redactionPolicy\", new JObject{\n                            {\"policyKind\", \"CharacterMask\"},\n                            {\"redactionCharacter\", \"#\"}\n                        }}\n                    };\n                    request[\"analysisInput\"] = new JObject{\n                        {\"documents\", new JArray{\n                            new JObject{\n                                {\"text\", context.Variables.GetValueOrDefault<string>(\"piiInputContent\")},\n                                {\"id\", \"1\"},\n                                {\"language\", context.Variables.GetValueOrDefault<string>(\"piiDetectionLanguage\")}\n                            }\n                        }}\n                    };\n                    return request.ToString();\n                }</set-body>\n            </send-request>\n\n            <!-- Evaluate PII service call status and capture failure details for graceful handling -->\n            <set-variable name=\"piiAnalysisFailureReason\" value=\"@{\n                var response = context.Variables.GetValueOrDefault<IResponse>(\"piiAnalysisResponse\");\n                if (response == null)\n                {\n                    return \"PII service call failed: no response received (timeout or connectivity issue).\";\n                }\n                if (response.StatusCode < 200 || response.StatusCode >= 300)\n                {\n                    var body = string.Empty;\n                    try { body = response.Body?.As<string>(preserveContent: true) ?? string.Empty; } catch { }\n                    return $\"PII service returned non-success status {response.StatusCode} {response.StatusReason}. Body: {body}\";\n                }\n                try\n                {\n                    var parsed = JObject.Parse(response.Body.As<string>(preserveContent: true));\n                    var errors = parsed.SelectToken(\"$.results.errors\") as JArray;\n                    if (errors != null && errors.Count > 0)\n                    {\n                        return $\"PII service reported document errors: {errors.ToString(Newtonsoft.Json.Formatting.None)}\";\n                    }\n                    var entitiesToken = parsed.SelectToken(\"$.results.documents[0].entities\");\n                    if (entitiesToken == null)\n                    {\n                        return \"PII service response did not contain expected entities payload.\";\n                    }\n                    return string.Empty;\n                }\n                catch (Exception ex)\n                {\n                    return $\"Failed to parse PII service response: {ex.Message}\";\n                }\n            }\" />\n\n            <choose>\n                <when condition=\"@(!string.IsNullOrEmpty(context.Variables.GetValueOrDefault<string>(\"piiAnalysisFailureReason\")))\">\n                    <!-- Emit trace for observability regardless of fail-open / fail-closed behavior -->\n                    <trace source=\"frag-pii-anonymization\" severity=\"error\">\n                        <message>@($\"PII anonymization degraded: {context.Variables.GetValueOrDefault<string>(\"piiAnalysisFailureReason\")}\")</message>\n                        <metadata name=\"requestId\" value=\"@(context.RequestId.ToString())\" />\n                        <metadata name=\"apiName\" value=\"@(context.Api?.Name ?? string.Empty)\" />\n                        <metadata name=\"operationName\" value=\"@(context.Operation?.Name ?? string.Empty)\" />\n                        <metadata name=\"piiServiceStatusCode\" value=\"@(((IResponse)context.Variables.GetValueOrDefault<IResponse>(\"piiAnalysisResponse\"))?.StatusCode.ToString() ?? \"n/a\")\" />\n                        <metadata name=\"continueOnNLPError\" value=\"@(context.Variables.GetValueOrDefault<string>(\"continueOnNLPError\", \"false\"))\" />\n                    </trace>\n                    <choose>\n                        <!-- Fail-closed: return a controlled error to the caller when continueOnNLPError is not enabled -->\n                        <when condition=\"@(context.Variables.GetValueOrDefault<string>(\"continueOnNLPError\", \"false\").Equals(\"true\", StringComparison.OrdinalIgnoreCase) == false)\">\n                            <return-response>\n                                <set-status code=\"502\" reason=\"PII Anonymization Service Unavailable\" />\n                                <set-header name=\"Content-Type\" exists-action=\"override\">\n                                    <value>application/json</value>\n                                </set-header>\n                                <set-body>@{\n                                    var error = new JObject {\n                                        [\"error\"] = new JObject {\n                                            [\"code\"] = \"PIIAnonymizationFailed\",\n                                            [\"message\"] = \"The PII anonymization service is currently unavailable and 'continueOnNLPError' is disabled. Request was blocked to prevent unmasked content from reaching the backend.\",\n                                            [\"details\"] = context.Variables.GetValueOrDefault<string>(\"piiAnalysisFailureReason\"),\n                                            [\"requestId\"] = context.RequestId.ToString()\n                                        }\n                                    };\n                                    return error.ToString();\n                                }</set-body>\n                            </return-response>\n                        </when>\n                        <otherwise>\n                            <!-- Fail-open: continue with regex-only mappings so the request can proceed -->\n                            <set-variable name=\"piiMappings\" value=\"@(context.Variables.GetValueOrDefault<string>(\"piiRegexMappings\") ?? \"[]\")\" />\n                        </otherwise>\n                    </choose>\n                </when>\n                <otherwise>\n                    <!-- Process PII Analysis Response and store mappings -->\n                    <set-variable name=\"piiMappings\" value=\"@{\n                        var response = context.Variables.GetValueOrDefault<IResponse>(\"piiAnalysisResponse\");\n                        var confidenceThreshold = context.Variables.GetValueOrDefault<double>(\"piiConfidenceThreshold\");\n                        var exclusions = context.Variables.GetValueOrDefault<string>(\"piiEntityCategoryExclusions\")\n                            .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)\n                            .Select(c => c.Trim())\n                            .ToList();\n\n                        var entitiesToken = JObject.Parse(response.Body.As<string>())\n                            .SelectToken(\"$.results.documents[0].entities\");\n                        var entitiesArray = entitiesToken as JArray ?? new JArray();\n\n                        var entities = entitiesArray\n                            .Where(e => e[\"confidenceScore\"] != null && e[\"confidenceScore\"].Value<double>() >= confidenceThreshold)\n                            .Where(e => !exclusions.Contains(e[\"category\"]?.ToString() ?? string.Empty))\n                            .OrderByDescending(e => (e[\"text\"]?.ToString() ?? string.Empty).Length);\n\n                        var mappings = new JArray();\n                        var categoryCounts = new Dictionary<string, int>();\n                        var processedTexts = new HashSet<string>(); // Track already processed texts\n\n                        foreach (var entity in entities) {\n                            var text = (entity[\"text\"]?.ToString() ?? string.Empty).TrimEnd('.', ',', ' ');\n                            if (string.IsNullOrEmpty(text)) { continue; }\n\n                            // Skip if this text has already been processed\n                            if (processedTexts.Contains(text)) {\n                                continue;\n                            }\n\n                            var category = entity[\"category\"].ToString();\n\n                            if (!categoryCounts.ContainsKey(category)) {\n                                categoryCounts[category] = 0;\n                            }\n\n                            var placeholder = $\"<{category}_{categoryCounts[category]}>\";\n                            mappings.Add(new JObject {\n                                [\"original\"] = text,\n                                [\"placeholder\"] = placeholder\n                            });\n\n                            categoryCounts[category]++;\n                            processedTexts.Add(text); // Mark this text as processed\n                        }\n\n                        return mappings.ToString();\n                    }\" />\n                </otherwise>\n            </choose>\n\n            <!-- Merge API and regex mappings -->\n            <set-variable name=\"piiMappings\" value=\"@{\n                var apiMappings = JArray.Parse(context.Variables.GetValueOrDefault<string>(\"piiMappings\") ?? \"[]\");\n                var regexMappings = JArray.Parse(context.Variables.GetValueOrDefault<string>(\"piiRegexMappings\") ?? \"[]\");\n                \n                foreach (var mapping in regexMappings)\n                {\n                    apiMappings.Add(mapping);\n                }\n                \n                return apiMappings.ToString();\n            }\" />\n\n            <!-- Replace PII with placeholders and set output variable -->\n            <set-variable name=\"piiAnonymizedContent\" value=\"@{\n                var content = context.Variables.GetValueOrDefault<string>(\"piiInputContent\");\n                var mappings = JArray.Parse(\n                    context.Variables.GetValueOrDefault<string>(\"piiMappings\"));\n                    \n                foreach (var mapping in mappings) {\n                    var original = mapping[\"original\"].ToString();\n                    var placeholder = mapping[\"placeholder\"].ToString();\n                    content = content.Replace(original, placeholder);\n                }\n                \n                return content;\n            }\" />\n        </when>\n        <otherwise>\n            <!-- When PII anonymization is disabled, just pass through the original content -->\n            <set-variable name=\"piiAnonymizedContent\" value=\"@(context.Variables.GetValueOrDefault<string>(\"piiInputContent\"))\" />\n        </otherwise>\n    </choose>\n</fragment>",
+    "$fxv#2": "<fragment>\n    <!-- Replace placeholders with original PII -->\n    <set-variable name=\"piiDeanonymizedContentOutput\" value=\"@{\n        var content = context.Variables.GetValueOrDefault<string>(\"piiDeanonymizeContentInput\");\n        \n        // Pre-process content to replace common encoded symbols\n        content = System.Text.RegularExpressions.Regex.Replace(content, @\"\\\\u003c\", \"<\");\n        content = System.Text.RegularExpressions.Regex.Replace(content, @\"\\\\u003e\", \">\");\n        \n        var mappings = JArray.Parse(\n            context.Variables.GetValueOrDefault<string>(\"piiMappings\"));\n        \n        foreach (var mapping in mappings) {\n            var original = mapping[\"original\"].ToString();\n            var placeholder = mapping[\"placeholder\"].ToString();\n            content = content.Replace(placeholder, original);\n        }\n        return content;\n    }\" />\n</fragment>",
+    "$fxv#3": "<fragment>\n    <!-- Save PII anonymization/deanonymization state to Event Hub using native log-to-eventhub policy -->\n    <choose>\n        <when condition=\"@(context.Variables.GetValueOrDefault<string>(\"piiStateSavingEnabled\") == \"true\")\">\n            <!-- Capture context information -->\n            <set-variable name=\"piiOperationId\" value=\"@(Guid.NewGuid().ToString())\" />\n            <set-variable name=\"piiOperationTimestamp\" value=\"@(DateTime.UtcNow.ToString(\"o\"))\" />\n            <set-variable name=\"piiApiName\" value=\"@(context.Api.Name ?? \"unknown\")\" />\n            <set-variable name=\"piiApiId\" value=\"@(context.Api.Id ?? \"unknown\")\" />\n            <set-variable name=\"piiProductName\" value=\"@(context.Product?.Name ?? \"unknown\")\" />\n            <set-variable name=\"piiProductId\" value=\"@(context.Product?.Id ?? \"unknown\")\" />\n            <set-variable name=\"piiSubscriptionName\" value=\"@(context.Subscription?.Name ?? \"unknown\")\" />\n            <set-variable name=\"piiSubscriptionId\" value=\"@(context.Subscription?.Id ?? \"unknown\")\" />\n            <set-variable name=\"piiOperationName\" value=\"@(context.Operation.Name ?? \"unknown\")\" />\n            <set-variable name=\"targetDeployment\" value=\"@(context.Variables.GetValueOrDefault<string>(\"requestedModel\") ?? \"unknown\")\" />\n            \n            <!-- Log to Event Hub using native policy -->\n            <log-to-eventhub logger-id=\"pii-usage-eventhub-logger\">@{\n                var eventData = new JObject();\n                \n                // Operation metadata\n                eventData[\"id\"] = context.Variables.GetValueOrDefault<string>(\"piiOperationId\");\n                eventData[\"timestamp\"] = context.Variables.GetValueOrDefault<string>(\"piiOperationTimestamp\");\n                eventData[\"type\"] = \"PII_Processing\";\n                eventData[\"targetDeployment\"] = context.Variables.GetValueOrDefault<string>(\"targetDeployment\");\n                // Enhanced API and subscription context with content\n                eventData[\"context\"] = new JObject {\n                    [\"api\"] = new JObject {\n                        [\"id\"] = context.Variables.GetValueOrDefault<string>(\"piiApiId\"),\n                        [\"name\"] = context.Variables.GetValueOrDefault<string>(\"piiApiName\"),\n                        [\"operation\"] = new JObject {\n                            [\"id\"] = context.Operation.Id ?? \"unknown\",\n                            [\"name\"] = context.Variables.GetValueOrDefault<string>(\"piiOperationName\"),\n                            [\"method\"] = context.Operation.Method ?? \"unknown\",\n                            [\"urlTemplate\"] = context.Operation.UrlTemplate ?? \"unknown\"\n                        },\n                        [\"content\"] = new JObject {\n                            [\"originalRequest\"] = context.Variables.GetValueOrDefault<string>(\"piiInputContent\"),\n                            [\"anonymizedRequest\"] = context.Variables.GetValueOrDefault<string>(\"piiAnonymizedContent\"),\n                            [\"originalResponse\"] = context.Variables.GetValueOrDefault<string>(\"originalResponse\"),\n                            [\"deanonymizedResponse\"] = context.Variables.GetValueOrDefault<string>(\"piiDeanonymizedContentOutput\")\n                        }\n                    },\n                    [\"product\"] = new JObject {\n                        [\"id\"] = context.Variables.GetValueOrDefault<string>(\"piiProductId\"),\n                        [\"name\"] = context.Variables.GetValueOrDefault<string>(\"piiProductName\")\n                    },\n                    [\"subscription\"] = new JObject {\n                        [\"id\"] = context.Variables.GetValueOrDefault<string>(\"piiSubscriptionId\"),\n                        [\"name\"] = context.Variables.GetValueOrDefault<string>(\"piiSubscriptionName\")\n                    }\n                };\n                \n                // Process information\n                eventData[\"process\"] = new JObject {\n                    [\"anonymizationEnabled\"] = context.Variables.GetValueOrDefault<string>(\"piiAnonymizationEnabled\") == \"true\",\n                    [\"confidenceThreshold\"] = context.Variables.GetValueOrDefault<double>(\"piiConfidenceThreshold\", 0.8),\n                    [\"entityCategoryExclusions\"] = context.Variables.GetValueOrDefault<string>(\"piiEntityCategoryExclusions\", \"\"),\n                    [\"deanonymizationPerformed\"] = context.Variables.ContainsKey(\"piiDeanonymizedContentOutput\")\n                };\n                \n                // Results summary\n                var mappings = new JArray();\n                if (context.Variables.ContainsKey(\"piiMappings\")) {\n                    try {\n                        mappings = JArray.Parse(context.Variables.GetValueOrDefault<string>(\"piiMappings\"));\n                        eventData[\"entityCount\"] = mappings.Count;\n                        \n                        // Group entities by category for reporting\n                        var categories = new Dictionary<string, int>();\n                        foreach (var mapping in mappings) {\n                            var placeholder = mapping[\"placeholder\"].ToString();\n                            var category = placeholder.TrimStart('<').Split('_')[0];\n                            \n                            if (!categories.ContainsKey(category)) {\n                                categories[category] = 0;\n                            }\n                            categories[category]++;\n                        }\n                        \n                        var categoryDetails = new JObject();\n                        foreach (var category in categories) {\n                            categoryDetails[category.Key] = category.Value;\n                        }\n                        eventData[\"entityCategories\"] = categoryDetails;\n                        \n                        // Include mappings for detailed audit (can be removed if too verbose)\n                        eventData[\"mappings\"] = mappings;\n                    }\n                    catch (Exception ex) {\n                        eventData[\"error\"] = \"Failed to process mappings: \" + ex.Message;\n                    }\n                }\n                \n                // Content length metrics (not the actual content)\n                if (context.Variables.ContainsKey(\"piiInputContent\")) {\n                    eventData[\"metrics\"] = new JObject {\n                        [\"inputContentLength\"] = context.Variables.GetValueOrDefault<string>(\"piiInputContent\", \"\").Length\n                    };\n                    \n                    if (context.Variables.ContainsKey(\"piiAnonymizedContent\")) {\n                        eventData[\"metrics\"][\"anonymizedContentLength\"] = \n                            context.Variables.GetValueOrDefault<string>(\"piiAnonymizedContent\", \"\").Length;\n                    }\n                    \n                    // Add deanonymization metrics\n                    if (context.Variables.ContainsKey(\"piiDeanonymizeContentInput\")) {\n                        eventData[\"metrics\"][\"deanonymizeInputLength\"] = \n                            context.Variables.GetValueOrDefault<string>(\"piiDeanonymizeContentInput\", \"\").Length;\n                    }\n                    \n                    if (context.Variables.ContainsKey(\"piiDeanonymizedContentOutput\")) {\n                        eventData[\"metrics\"][\"deanonymizedOutputLength\"] = \n                            context.Variables.GetValueOrDefault<string>(\"piiDeanonymizedContentOutput\", \"\").Length;\n                    }\n                }\n                \n                // Add deanonymization flow details\n                eventData[\"deanonymization\"] = new JObject {\n                    [\"performed\"] = context.Variables.ContainsKey(\"piiDeanonymizedContentOutput\"),\n                    [\"inputSource\"] = context.Variables.ContainsKey(\"piiDeanonymizeContentInput\") ? \"present\" : \"missing\",\n                    [\"status\"] = context.Variables.ContainsKey(\"piiDeanonymizedContentOutput\") ? \"completed\" : \"not_performed\",\n                    [\"timestamp\"] = DateTime.UtcNow.ToString(\"o\")\n                };\n                \n                // Track end-to-end flow\n                eventData[\"processingFlow\"] = new JObject {\n                    [\"anonymization\"] = new JObject {\n                        [\"performed\"] = context.Variables.ContainsKey(\"piiAnonymizedContent\"),\n                        [\"entityCount\"] = context.Variables.ContainsKey(\"piiMappings\") ? \n                            JArray.Parse(context.Variables.GetValueOrDefault<string>(\"piiMappings\")).Count : 0\n                    },\n                    [\"deanonymization\"] = new JObject {\n                        [\"performed\"] = context.Variables.ContainsKey(\"piiDeanonymizedContentOutput\"),\n                        [\"success\"] = context.Variables.ContainsKey(\"piiDeanonymizedContentOutput\")\n                    }\n                };\n                \n                return eventData.ToString();\n            }</log-to-eventhub>\n        </when>\n    </choose>\n</fragment>\n",
+    "$fxv#4": "<policies>\n    <inbound>\n        <base />\n        <!-- The fragment fills availableFilteredModels, honouring the access\n             contract's allowedModels. Challenge 1 replaces the fragment with one\n             generated from the real deployments; this operation is unaffected. -->\n        <include-fragment fragment-id=\"get-available-models\" />\n        <return-response>\n            <set-status code=\"200\" reason=\"OK\" />\n            <set-header name=\"Content-Type\" exists-action=\"override\">\n                <value>application/json</value>\n            </set-header>\n            <set-body>@{\n                JArray models = JArray.Parse((string)context.Variables[\"availableFilteredModels\"]);\n                return new JObject(new JProperty(\"object\", \"list\"), new JProperty(\"data\", models)).ToString();\n            }</set-body>\n        </return-response>\n    </inbound>\n    <backend><base /></backend>\n    <outbound><base /></outbound>\n    <on-error><base /></on-error>\n</policies>\n",
+    "hubFoundryAccountName": "[format('aif-hub-{0}{1}', parameters('resourceToken'), parameters('foundryNameSuffix'))]",
+    "hubFoundryProjectName": "citadel-hub-project",
+    "apimName": "[format('apim-citadel-{0}', parameters('resourceToken'))]",
+    "cosmosAccountName": "[format('cos-citadel-{0}', parameters('resourceToken'))]",
+    "eventHubNamespace": "[format('evh-citadel-{0}', parameters('resourceToken'))]",
+    "eventHubName": "usage-events",
+    "keyVaultName": "[format('kv-hub-{0}', parameters('resourceToken'))]",
+    "laName": "[format('law-citadel-{0}', parameters('resourceToken'))]",
+    "aiName": "[format('appi-citadel-{0}', parameters('resourceToken'))]",
+    "storageAccountName": "[format('stcitadel{0}', replace(parameters('resourceToken'), '-', ''))]",
+    "logicAppName": "[format('la-usage-ingestion-{0}', parameters('resourceToken'))]",
+    "apimMIName": "[format('mi-apim-{0}', parameters('resourceToken'))]",
+    "logicAppMIName": "[format('mi-logicapp-{0}', parameters('resourceToken'))]",
+    "spokeFoundryAccountName": "[format('aif-spoke-{0}{1}', parameters('resourceToken'), parameters('foundryNameSuffix'))]",
+    "spokeFoundryProjectName": "citadel-agents-project",
+    "spokeLaName": "[format('law-spoke-{0}', parameters('resourceToken'))]",
+    "spokeAiName": "[format('appi-spoke-{0}', parameters('resourceToken'))]",
+    "spokeKeyVaultName": "[format('kv-spoke-{0}', parameters('resourceToken'))]",
+    "spokeAcrName": "[format('acrcitadel{0}', replace(parameters('resourceToken'), '-', ''))]",
+    "cosmosApi": "2024-11-15",
+    "aiServicesApi": "2025-04-01-preview",
+    "cosmosDatabaseName": "citadel-hub",
+    "cosmosContainers": [
+      {
+        "name": "usage-events",
+        "partitionKey": "/eventId"
+      },
+      {
+        "name": "contracts",
+        "partitionKey": "/contractId"
+      },
+      {
+        "name": "models",
+        "partitionKey": "/modelId"
+      },
+      {
+        "name": "config",
+        "partitionKey": "/configId"
+      }
+    ],
+    "cosmosContainersPhase4": "[concat(variables('cosmosContainers'), createArray(createObject('name', 'ai-usage-container', 'partitionKey', '/productName'), createObject('name', 'pii-usage-container', 'partitionKey', '/type'), createObject('name', 'llm-usage-container', 'partitionKey', '/productName')))]",
+    "aiFoundryModels": [
+      {
+        "name": "gpt-4.1",
+        "publisher": "OpenAI",
+        "version": "2025-04-14",
+        "sku": "GlobalStandard",
+        "capacity": "[parameters('modelCapacity')]",
+        "retirementDate": "2027-04-14"
+      },
+      {
+        "name": "gpt-5.4-mini",
+        "publisher": "OpenAI",
+        "version": "2026-03-17",
+        "sku": "GlobalStandard",
+        "capacity": "[parameters('modelCapacity')]",
+        "retirementDate": "2027-09-21"
+      },
+      {
+        "name": "gpt-5.2",
+        "publisher": "OpenAI",
+        "version": "2025-12-11",
+        "sku": "GlobalStandard",
+        "capacity": "[parameters('modelCapacity')]",
+        "retirementDate": "2027-06-08"
+      },
+      {
+        "name": "text-embedding-3-large",
+        "publisher": "OpenAI",
+        "version": "1",
+        "sku": "GlobalStandard",
+        "capacity": "[parameters('modelCapacity')]",
+        "retirementDate": "2028-02-09"
+      },
+      {
+        "name": "Mistral-Large-3",
+        "publisher": "Mistral AI",
+        "version": "1",
+        "sku": "GlobalStandard",
+        "capacity": "[parameters('modelCapacity')]",
+        "retirementDate": "2099-12-31"
+      },
+      {
+        "name": "Phi-4",
+        "publisher": "Microsoft",
+        "version": "7",
+        "sku": "GlobalStandard",
+        "capacity": 1,
+        "retirementDate": "2099-12-31"
+      }
+    ],
+    "llmBackendConfig": [
+      {
+        "backendId": "[variables('hubFoundryAccountName')]",
+        "backendType": "ai-foundry",
+        "endpoint": "[format('https://{0}.openai.azure.com', variables('hubFoundryAccountName'))]",
+        "authScheme": "managedIdentity",
+        "authType": "managed-identity",
+        "priority": 1,
+        "weight": 100,
+        "supportedModels": "[variables('llmSupportedModels')]"
+      }
+    ]
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('apimMIName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
+    },
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('logicAppMIName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[variables('laName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('aiName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('laName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('laName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('keyVaultName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "tenantId": "[subscription().tenantId]",
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "enableRbacAuthorization": true,
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2025-04-01-preview",
+      "name": "[variables('hubFoundryAccountName')]",
+      "location": "[parameters('location')]",
+      "kind": "AIServices",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "S0"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "customSubDomainName": "[variables('hubFoundryAccountName')]",
+        "publicNetworkAccess": "Enabled",
+        "allowProjectManagement": true
+      }
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts/projects",
+      "apiVersion": "2025-04-01-preview",
+      "name": "[format('{0}/{1}', variables('hubFoundryAccountName'), variables('hubFoundryProjectName'))]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "description": "Citadel Agentic Governance Hub - Primary project for governance demonstrations"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DocumentDB/databaseAccounts",
+      "apiVersion": "2024-11-15",
+      "name": "[variables('cosmosAccountName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "GlobalDocumentDB",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "databaseAccountOfferType": "Standard",
+        "disableLocalAuth": true,
+        "publicNetworkAccess": "Enabled",
+        "capabilities": [
+          {
+            "name": "EnableServerless"
+          }
+        ],
+        "locations": [
+          {
+            "locationName": "[parameters('location')]",
+            "failoverPriority": 0
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.DocumentDB/databaseAccounts/sqlDatabases",
+      "apiVersion": "2024-11-15",
+      "name": "[format('{0}/{1}', variables('cosmosAccountName'), variables('cosmosDatabaseName'))]",
+      "properties": {
+        "resource": {
+          "id": "[variables('cosmosDatabaseName')]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DocumentDB/databaseAccounts', variables('cosmosAccountName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "cosmosContainers_resource",
+        "count": "[length(variables('cosmosContainersPhase4'))]"
+      },
+      "type": "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers",
+      "apiVersion": "2024-11-15",
+      "name": "[format('{0}/{1}/{2}', variables('cosmosAccountName'), variables('cosmosDatabaseName'), variables('cosmosContainersPhase4')[copyIndex()].name)]",
+      "properties": {
+        "resource": {
+          "id": "[variables('cosmosContainersPhase4')[copyIndex()].name]",
+          "partitionKey": {
+            "paths": [
+              "[variables('cosmosContainersPhase4')[copyIndex()].partitionKey]"
+            ],
+            "kind": "Hash"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlDatabases', variables('cosmosAccountName'), variables('cosmosDatabaseName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "hubFoundryModelDeployments",
+        "count": "[length(variables('aiFoundryModels'))]",
+        "mode": "serial",
+        "batchSize": 1
+      },
+      "type": "Microsoft.CognitiveServices/accounts/deployments",
+      "apiVersion": "2025-04-01-preview",
+      "name": "[format('{0}/{1}', variables('hubFoundryAccountName'), replace(variables('aiFoundryModels')[copyIndex()].name, '.', '-'))]",
+      "sku": {
+        "name": "[variables('aiFoundryModels')[copyIndex()].sku]",
+        "capacity": "[variables('aiFoundryModels')[copyIndex()].capacity]"
+      },
+      "properties": {
+        "model": {
+          "format": "[variables('aiFoundryModels')[copyIndex()].publisher]",
+          "name": "[variables('aiFoundryModels')[copyIndex()].name]",
+          "version": "[variables('aiFoundryModels')[copyIndex()].version]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/namedValues",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'uami-client-id')]",
+      "properties": {
+        "displayName": "uami-client-id",
+        "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')), '2023-01-31').clientId]",
+        "secret": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/namedValues",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'piiserviceurl')]",
+      "properties": {
+        "displayName": "piiServiceUrl",
+        "value": "[format('https://{0}.cognitiveservices.azure.com', variables('hubFoundryAccountName'))]",
+        "secret": false
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/backends",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'backend-hub-foundry')]",
+      "properties": {
+        "title": "Hub Foundry Backend",
+        "description": "Hub Foundry AI Services backend for model inference via managed identity",
+        "url": "[format('https://{0}.openai.azure.com', variables('hubFoundryAccountName'))]",
+        "protocol": "http",
+        "circuitBreaker": {
+          "rules": [
+            {
+              "name": "serverErrorRule",
+              "tripDuration": "PT1M",
+              "failureCondition": {
+                "count": 5,
+                "interval": "PT1M",
+                "statusCodeRanges": [
+                  {
+                    "min": 500,
+                    "max": 599
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')), 'CognitiveServicesOpenAIUser')]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')), 'CognitiveServicesUser')]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a97b65f3-24c7-4388-baec-2e87135dc908')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.EventHub/namespaces', variables('eventHubNamespace'))]",
+      "name": "[guid(resourceId('Microsoft.EventHub/namespaces', variables('eventHubNamespace')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')), 'AzureEventHubsDataSender')]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2b629674-e913-4c01-ae53-ef4638d8f975')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName'))]",
+        "[resourceId('Microsoft.EventHub/namespaces', variables('eventHubNamespace'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/policyFragments",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'get-available-models')]",
+      "properties": {
+        "format": "rawxml",
+        "description": "Sets availableModels/availableFilteredModels for the list-models operation",
+        "value": "[variables('$fxv#0')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/policyFragments",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'pii-anonymization')]",
+      "properties": {
+        "format": "rawxml",
+        "description": "Detects PII with the Language service and masks it before the request reaches the model",
+        "value": "[variables('$fxv#1')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ApiManagement/service/namedValues', variables('apimName'), 'piiserviceurl')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/policyFragments",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'pii-deanonymization')]",
+      "properties": {
+        "format": "rawxml",
+        "description": "Restores the original PII values in the response returned to the caller",
+        "value": "[variables('$fxv#2')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/policyFragments",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'pii-state-saving')]",
+      "properties": {
+        "format": "rawxml",
+        "description": "Emits PII handling events to Event Hub for audit",
+        "value": "[variables('$fxv#3')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ApiManagement/service/loggers', variables('apimName'), 'pii-usage-eventhub-logger')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'universal-llm-api')]",
+      "properties": {
+        "displayName": "Universal LLM API",
+        "description": "Gateway for Azure OpenAI and AI Foundry models - supports GPT, embedding, and other inference types",
+        "path": "models",
+        "protocols": [
+          "https"
+        ],
+        "subscriptionRequired": true,
+        "subscriptionKeyParameterNames": {
+          "header": "api-key",
+          "query": "api-key"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'universal-llm-api', 'get-models')]",
+      "properties": {
+        "displayName": "List Available Models",
+        "method": "GET",
+        "urlTemplate": "/models",
+        "description": "Returns list of available model deployments"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'universal-llm-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'universal-llm-api', 'get-models', 'policy')]",
+      "properties": {
+        "format": "rawxml",
+        "value": "[variables('$fxv#4')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'universal-llm-api', 'get-models')]",
+        "[resourceId('Microsoft.ApiManagement/service/policyFragments', variables('apimName'), 'get-available-models')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'universal-llm-api', 'post-chat-completions')]",
+      "properties": {
+        "displayName": "Create Chat Completion",
+        "method": "POST",
+        "urlTemplate": "/chat/completions",
+        "description": "Generate chat completions using requested model"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'universal-llm-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'universal-llm-api', 'post-chat-completions', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" client-id=\"{{uami-client-id}}\" output-token-variable-name=\"msi-access-token\" ignore-error=\"false\"/><set-header name=\"Authorization\" exists-action=\"override\"><value>@(\"Bearer \" + (string)context.Variables[\"msi-access-token\"])</value></set-header><set-variable name=\"requestedModel\" value=\"@{var body = context.Request.Body?.As&lt;JObject&gt;(preserveContent: true); string m = body != null ? (string)body[&quot;model&quot;] : null; return string.IsNullOrEmpty(m) ? &quot;gpt-4.1&quot; : m;}\"/><choose><when condition=\"@{string[] allowed = new string[] {&quot;gpt-4.1&quot;,&quot;gpt-5.4-mini&quot;,&quot;gpt-5.2&quot;,&quot;Mistral-Large-3&quot;,&quot;Phi-4&quot;}; string requested = (string)context.Variables[&quot;requestedModel&quot;]; return !allowed.Contains(requested);}\"><return-response><set-status code=\"400\" reason=\"Bad Request\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>@{return new JObject(new JProperty(\"error\",\"unsupported model requested for chat completions\"),new JProperty(\"requestedModel\",(string)context.Variables[\"requestedModel\"])).ToString();}</set-body></return-response></when></choose><set-variable name=\"deploymentName\" value=\"@(((string)context.Variables[&quot;requestedModel&quot;]).Replace(&quot;.&quot;, &quot;-&quot;))\"/><set-backend-service backend-id=\"backend-hub-foundry\"/><rewrite-uri template=\"@(&quot;/openai/deployments/&quot; + (string)context.Variables[&quot;deploymentName&quot;] + &quot;/chat/completions?api-version=2024-10-21&quot;)\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/backends', variables('apimName'), 'backend-hub-foundry')]",
+        "[resourceId('Microsoft.ApiManagement/service/namedValues', variables('apimName'), 'uami-client-id')]",
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'universal-llm-api', 'post-chat-completions')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'universal-llm-api', 'post-embeddings')]",
+      "properties": {
+        "displayName": "Create Embeddings",
+        "method": "POST",
+        "urlTemplate": "/embeddings",
+        "description": "Generate embeddings using text-embedding-3-large"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'universal-llm-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'universal-llm-api', 'post-embeddings', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" client-id=\"{{uami-client-id}}\" output-token-variable-name=\"msi-access-token\" ignore-error=\"false\"/><set-header name=\"Authorization\" exists-action=\"override\"><value>@(\"Bearer \" + (string)context.Variables[\"msi-access-token\"])</value></set-header><set-variable name=\"requestedModel\" value=\"@{var body = context.Request.Body?.As&lt;JObject&gt;(preserveContent: true); string m = body != null ? (string)body[&quot;model&quot;] : null; return string.IsNullOrEmpty(m) ? &quot;text-embedding-3-large&quot; : m;}\"/><choose><when condition=\"@{return (string)context.Variables[&quot;requestedModel&quot;] != &quot;text-embedding-3-large&quot;;}\"><return-response><set-status code=\"400\" reason=\"Bad Request\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>@{return new JObject(new JProperty(\"error\",\"unsupported model requested for embeddings\"),new JProperty(\"requestedModel\",(string)context.Variables[\"requestedModel\"])).ToString();}</set-body></return-response></when></choose><set-backend-service backend-id=\"backend-hub-foundry\"/><rewrite-uri template=\"/openai/deployments/text-embedding-3-large/embeddings?api-version=2024-10-21\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/backends', variables('apimName'), 'backend-hub-foundry')]",
+        "[resourceId('Microsoft.ApiManagement/service/namedValues', variables('apimName'), 'uami-client-id')]",
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'universal-llm-api', 'post-embeddings')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'universal-llm-api', 'post-responses')]",
+      "properties": {
+        "displayName": "Record LLM Response",
+        "method": "POST",
+        "urlTemplate": "/responses",
+        "description": "Log LLM response for audit trail"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'universal-llm-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'universal-llm-api', 'get-response')]",
+      "properties": {
+        "displayName": "Get Response",
+        "method": "GET",
+        "urlTemplate": "/responses/{response_id}",
+        "templateParameters": [
+          {
+            "name": "response_id",
+            "required": true,
+            "type": "string",
+            "description": "Response UUID"
+          }
+        ],
+        "description": "Retrieve stored LLM response"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'universal-llm-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'universal-llm-api', 'get-response-input-items')]",
+      "properties": {
+        "displayName": "Get Response Input Items",
+        "method": "GET",
+        "urlTemplate": "/responses/{response_id}/input_items",
+        "templateParameters": [
+          {
+            "name": "response_id",
+            "required": true,
+            "type": "string",
+            "description": "Response UUID"
+          }
+        ],
+        "description": "Retrieve input items for stored response"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'universal-llm-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'universal-llm-api', 'get-deployments')]",
+      "properties": {
+        "displayName": "List Deployments",
+        "method": "GET",
+        "urlTemplate": "/deployments",
+        "description": "Returns available model deployments"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'universal-llm-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'universal-llm-api', 'get-deployments', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><return-response><set-status code=\"200\" reason=\"OK\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>{\"value\":[{\"id\":\"/deployments/gpt-4.1\",\"name\":\"gpt-4.1\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"gpt-4.1\",\"format\":\"OpenAI\",\"version\":\"2025-04-14\"},\"deploymentName\":\"gpt-4-1\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/gpt-5.4-mini\",\"name\":\"gpt-5.4-mini\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"gpt-5.4-mini\",\"format\":\"OpenAI\",\"version\":\"2026-03-17\"},\"deploymentName\":\"gpt-5-4-mini\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/gpt-5.2\",\"name\":\"gpt-5.2\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"gpt-5.2\",\"format\":\"OpenAI\",\"version\":\"2025-12-11\"},\"deploymentName\":\"gpt-5-2\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/text-embedding-3-large\",\"name\":\"text-embedding-3-large\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"text-embedding-3-large\",\"format\":\"OpenAI\",\"version\":\"1\"},\"deploymentName\":\"text-embedding-3-large\",\"capabilities\":{\"embeddings\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/Mistral-Large-3\",\"name\":\"Mistral-Large-3\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"Mistral-Large-3\",\"format\":\"Mistral AI\",\"version\":\"1\"},\"deploymentName\":\"Mistral-Large-3\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/Phi-4\",\"name\":\"Phi-4\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":1},\"properties\":{\"model\":{\"name\":\"Phi-4\",\"format\":\"Microsoft\",\"version\":\"7\"},\"deploymentName\":\"Phi-4\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}}]}</set-body></return-response></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'universal-llm-api', 'get-deployments')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'unified-ai-api')]",
+      "properties": {
+        "displayName": "Unified AI API",
+        "description": "Multi-backend routing for Azure OpenAI, AI Foundry, and Gemini (Notebook 6 support)",
+        "path": "unified-ai",
+        "protocols": [
+          "https"
+        ],
+        "subscriptionRequired": true,
+        "subscriptionKeyParameterNames": {
+          "header": "api-key",
+          "query": "api-key"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'unified-ai-api', 'get-deployments')]",
+      "properties": {
+        "displayName": "List Deployments",
+        "method": "GET",
+        "urlTemplate": "/deployments",
+        "description": "Returns available deployments across backends"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'unified-ai-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'unified-ai-api', 'get-deployment')]",
+      "properties": {
+        "displayName": "Get Deployment Details",
+        "method": "GET",
+        "urlTemplate": "/deployments/{model_name}",
+        "templateParameters": [
+          {
+            "name": "model_name",
+            "required": true,
+            "type": "string",
+            "description": "Model deployment name"
+          }
+        ],
+        "description": "Get details for specific deployment"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'unified-ai-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'unified-ai-api', 'post-openai-chat-completions')]",
+      "properties": {
+        "displayName": "OpenAI Chat Completions",
+        "method": "POST",
+        "urlTemplate": "/openai/deployments/{model}/chat/completions",
+        "templateParameters": [
+          {
+            "name": "model",
+            "required": true,
+            "type": "string",
+            "description": "Model deployment name (gpt-5.2, Mistral-Large-3, etc.)"
+          }
+        ],
+        "description": "Create chat completions in OpenAI format"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'unified-ai-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'unified-ai-api', 'post-foundry-chat-completions')]",
+      "properties": {
+        "displayName": "Foundry Inference API Chat Completions",
+        "method": "POST",
+        "urlTemplate": "/models/chat/completions",
+        "description": "Create chat completions in AI Foundry inference format"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'unified-ai-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'unified-ai-api', 'post-gemini-chat-completions')]",
+      "properties": {
+        "displayName": "Gemini Chat Completions (Optional)",
+        "method": "POST",
+        "urlTemplate": "/v1beta/openai/chat/completions",
+        "description": "Create chat completions using Google Gemini (optional, deferred to Phase 5)"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'unified-ai-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'universal-llm-api', 'post-responses', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><set-variable name=\"requestedModel\" value=\"@{var body = context.Request.Body?.As&lt;JObject&gt;(preserveContent: true); string m = body != null ? (string)body[&quot;model&quot;] : null; return string.IsNullOrEmpty(m) ? &quot;gpt-4.1&quot; : m;}\"/><choose><when condition=\"@{ var allowed = new string[]{&quot;gpt-4.1&quot;,&quot;gpt-5.4-mini&quot;,&quot;gpt-5.2&quot;,&quot;text-embedding-3-large&quot;,&quot;Mistral-Large-3&quot;,&quot;Phi-4&quot;}; return !allowed.Contains((string)context.Variables[&quot;requestedModel&quot;]); }\"><return-response><set-status code=\"400\" reason=\"Bad Request\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>{\"error\":\"unsupported model requested for responses\"}</set-body></return-response></when></choose><authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" client-id=\"{{uami-client-id}}\" output-token-variable-name=\"msi-access-token\" ignore-error=\"false\"/><set-header name=\"Authorization\" exists-action=\"override\"><value>@(&quot;Bearer &quot; + (string)context.Variables[&quot;msi-access-token&quot;])</value></set-header><set-backend-service backend-id=\"backend-hub-foundry\"/><set-body>@{var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true); string m = (string)body[&quot;model&quot;]; if (string.IsNullOrEmpty(m)) { m = &quot;gpt-4.1&quot;; } body[&quot;model&quot;] = m.Replace(&quot;.&quot;, &quot;-&quot;); return body.ToString();}</set-body><rewrite-uri template=\"/openai/responses?api-version=2025-03-01-preview\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'universal-llm-api', 'post-responses')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'universal-llm-api', 'get-response', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" client-id=\"{{uami-client-id}}\" output-token-variable-name=\"msi-access-token\" ignore-error=\"false\"/><set-header name=\"Authorization\" exists-action=\"override\"><value>@(&quot;Bearer &quot; + (string)context.Variables[&quot;msi-access-token&quot;])</value></set-header><set-backend-service backend-id=\"backend-hub-foundry\"/><rewrite-uri template=\"@(&quot;/openai/responses/&quot; + context.Request.MatchedParameters[&quot;response_id&quot;] + &quot;?api-version=2025-03-01-preview&quot;)\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'universal-llm-api', 'get-response')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'universal-llm-api', 'get-response-input-items', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" client-id=\"{{uami-client-id}}\" output-token-variable-name=\"msi-access-token\" ignore-error=\"false\"/><set-header name=\"Authorization\" exists-action=\"override\"><value>@(&quot;Bearer &quot; + (string)context.Variables[&quot;msi-access-token&quot;])</value></set-header><set-backend-service backend-id=\"backend-hub-foundry\"/><rewrite-uri template=\"@(&quot;/openai/responses/&quot; + context.Request.MatchedParameters[&quot;response_id&quot;] + &quot;/input_items?api-version=2025-03-01-preview&quot;)\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'universal-llm-api', 'get-response-input-items')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'unified-ai-api', 'get-deployments', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><return-response><set-status code=\"200\" reason=\"OK\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>{\"value\":[{\"id\":\"/deployments/gpt-4.1\",\"name\":\"gpt-4.1\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"gpt-4.1\",\"format\":\"OpenAI\",\"version\":\"2025-04-14\"},\"deploymentName\":\"gpt-4-1\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/gpt-5.4-mini\",\"name\":\"gpt-5.4-mini\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"gpt-5.4-mini\",\"format\":\"OpenAI\",\"version\":\"2026-03-17\"},\"deploymentName\":\"gpt-5-4-mini\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/gpt-5.2\",\"name\":\"gpt-5.2\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"gpt-5.2\",\"format\":\"OpenAI\",\"version\":\"2025-12-11\"},\"deploymentName\":\"gpt-5-2\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/text-embedding-3-large\",\"name\":\"text-embedding-3-large\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"text-embedding-3-large\",\"format\":\"OpenAI\",\"version\":\"1\"},\"deploymentName\":\"text-embedding-3-large\",\"capabilities\":{\"embeddings\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/Mistral-Large-3\",\"name\":\"Mistral-Large-3\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"Mistral-Large-3\",\"format\":\"Mistral AI\",\"version\":\"1\"},\"deploymentName\":\"Mistral-Large-3\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/Phi-4\",\"name\":\"Phi-4\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":1},\"properties\":{\"model\":{\"name\":\"Phi-4\",\"format\":\"Microsoft\",\"version\":\"7\"},\"deploymentName\":\"Phi-4\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}}]}</set-body></return-response></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'unified-ai-api', 'get-deployments')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'unified-ai-api', 'get-deployment', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><choose><when condition=\"@{ var n = context.Request.MatchedParameters[&quot;model_name&quot;]; var allowed = new string[]{&quot;gpt-4.1&quot;,&quot;gpt-5.4-mini&quot;,&quot;gpt-5.2&quot;,&quot;text-embedding-3-large&quot;,&quot;Mistral-Large-3&quot;,&quot;Phi-4&quot;}; return !allowed.Contains(n); }\"><return-response><set-status code=\"404\" reason=\"Not Found\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>{\"error\":{\"code\":\"DeploymentNotFound\",\"message\":\"The specified deployment was not found.\"}}</set-body></return-response></when><otherwise><return-response><set-status code=\"200\" reason=\"OK\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>@{ var n = context.Request.MatchedParameters[\"model_name\"]; string fmt = \"OpenAI\"; if (n == \"Mistral-Large-3\") { fmt = \"Mistral AI\"; } if (n == \"Phi-4\") { fmt = \"Microsoft\"; } var m = new JObject(); m[\"name\"] = n; m[\"format\"] = fmt; var o = new JObject(); o[\"id\"] = \"/deployments/\" + n; o[\"name\"] = n; o[\"type\"] = \"Microsoft.CognitiveServices/accounts/deployments\"; o[\"properties\"] = new JObject(new JProperty(\"model\", m)); return o.ToString(); }</set-body></return-response></otherwise></choose></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'unified-ai-api', 'get-deployment')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'unified-ai-api', 'post-openai-chat-completions', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><choose><when condition=\"@{ var n = context.Request.MatchedParameters[&quot;model&quot;]; var allowed = new string[]{&quot;gpt-4.1&quot;,&quot;gpt-5.4-mini&quot;,&quot;gpt-5.2&quot;,&quot;text-embedding-3-large&quot;,&quot;Mistral-Large-3&quot;,&quot;Phi-4&quot;}; return !allowed.Contains(n); }\"><return-response><set-status code=\"400\" reason=\"Bad Request\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>{\"error\":\"unsupported model requested\"}</set-body></return-response></when></choose><authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" client-id=\"{{uami-client-id}}\" output-token-variable-name=\"msi-access-token\" ignore-error=\"false\"/><set-header name=\"Authorization\" exists-action=\"override\"><value>@(&quot;Bearer &quot; + (string)context.Variables[&quot;msi-access-token&quot;])</value></set-header><set-backend-service backend-id=\"backend-hub-foundry\"/><rewrite-uri template=\"@(&quot;/openai/deployments/&quot; + context.Request.MatchedParameters[&quot;model&quot;].Replace(&quot;.&quot;,&quot;-&quot;) + &quot;/chat/completions?api-version=2024-10-21&quot;)\"/></inbound><backend><base/></backend><outbound><base/><set-header name=\"UAIG-Backend\" exists-action=\"override\"><value>backend-hub-foundry</value></set-header><set-header name=\"UAIG-API-Type\" exists-action=\"override\"><value>azure-openai</value></set-header><set-header name=\"UAIG-Model\" exists-action=\"override\"><value>@(context.Request.MatchedParameters[&quot;model&quot;])</value></set-header><set-header name=\"UAIG-Is-Streaming\" exists-action=\"override\"><value>@(context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;,&quot;&quot;).Contains(&quot;event-stream&quot;).ToString().ToLower())</value></set-header></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'unified-ai-api', 'post-openai-chat-completions')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'unified-ai-api', 'post-foundry-chat-completions', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><set-variable name=\"requestedModel\" value=\"@{var body = context.Request.Body?.As&lt;JObject&gt;(preserveContent: true); string m = body != null ? (string)body[&quot;model&quot;] : null; return string.IsNullOrEmpty(m) ? &quot;gpt-4.1&quot; : m;}\"/><choose><when condition=\"@{ var allowed = new string[]{&quot;gpt-4.1&quot;,&quot;gpt-5.4-mini&quot;,&quot;gpt-5.2&quot;,&quot;text-embedding-3-large&quot;,&quot;Mistral-Large-3&quot;,&quot;Phi-4&quot;}; return !allowed.Contains((string)context.Variables[&quot;requestedModel&quot;]); }\"><return-response><set-status code=\"400\" reason=\"Bad Request\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>{\"error\":\"unsupported model requested for chat completions\"}</set-body></return-response></when></choose><authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" client-id=\"{{uami-client-id}}\" output-token-variable-name=\"msi-access-token\" ignore-error=\"false\"/><set-header name=\"Authorization\" exists-action=\"override\"><value>@(&quot;Bearer &quot; + (string)context.Variables[&quot;msi-access-token&quot;])</value></set-header><set-backend-service backend-id=\"backend-hub-foundry\"/><rewrite-uri template=\"@(&quot;/openai/deployments/&quot; + ((string)context.Variables[&quot;requestedModel&quot;]).Replace(&quot;.&quot;,&quot;-&quot;) + &quot;/chat/completions?api-version=2024-10-21&quot;)\"/></inbound><backend><base/></backend><outbound><base/><set-header name=\"UAIG-Backend\" exists-action=\"override\"><value>backend-hub-foundry</value></set-header><set-header name=\"UAIG-API-Type\" exists-action=\"override\"><value>foundry-inference</value></set-header><set-header name=\"UAIG-Model\" exists-action=\"override\"><value>@((string)context.Variables[&quot;requestedModel&quot;])</value></set-header><set-header name=\"UAIG-Is-Streaming\" exists-action=\"override\"><value>@(context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;,&quot;&quot;).Contains(&quot;event-stream&quot;).ToString().ToLower())</value></set-header></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'unified-ai-api', 'post-foundry-chat-completions')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'unified-ai-api', 'post-gemini-chat-completions', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><return-response><set-status code=\"501\" reason=\"Not Implemented\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>{\"error\":{\"code\":\"BackendNotConfigured\",\"message\":\"No Gemini backend is provisioned in this MicroHack lab. Onboard one in challenge 1 to enable this path.\"}}</set-body></return-response></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'unified-ai-api', 'post-gemini-chat-completions')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'azure-openai-api')]",
+      "properties": {
+        "displayName": "Azure OpenAI API",
+        "description": "Azure OpenAI compatible surface (deployment name in URL path)",
+        "path": "openai",
+        "protocols": [
+          "https"
+        ],
+        "subscriptionRequired": true,
+        "subscriptionKeyParameterNames": {
+          "header": "api-key",
+          "query": "api-key"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'azure-openai-api', 'get-deployments')]",
+      "properties": {
+        "displayName": "List Deployments",
+        "method": "GET",
+        "urlTemplate": "/deployments",
+        "description": "Returns available model deployments"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'azure-openai-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'azure-openai-api', 'get-deployments', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><return-response><set-status code=\"200\" reason=\"OK\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>{\"value\":[{\"id\":\"/deployments/gpt-4.1\",\"name\":\"gpt-4.1\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"gpt-4.1\",\"format\":\"OpenAI\",\"version\":\"2025-04-14\"},\"deploymentName\":\"gpt-4-1\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/gpt-5.4-mini\",\"name\":\"gpt-5.4-mini\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"gpt-5.4-mini\",\"format\":\"OpenAI\",\"version\":\"2026-03-17\"},\"deploymentName\":\"gpt-5-4-mini\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/gpt-5.2\",\"name\":\"gpt-5.2\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"gpt-5.2\",\"format\":\"OpenAI\",\"version\":\"2025-12-11\"},\"deploymentName\":\"gpt-5-2\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/text-embedding-3-large\",\"name\":\"text-embedding-3-large\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"text-embedding-3-large\",\"format\":\"OpenAI\",\"version\":\"1\"},\"deploymentName\":\"text-embedding-3-large\",\"capabilities\":{\"embeddings\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/Mistral-Large-3\",\"name\":\"Mistral-Large-3\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":20},\"properties\":{\"model\":{\"name\":\"Mistral-Large-3\",\"format\":\"Mistral AI\",\"version\":\"1\"},\"deploymentName\":\"Mistral-Large-3\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}},{\"id\":\"/deployments/Phi-4\",\"name\":\"Phi-4\",\"type\":\"Microsoft.CognitiveServices/accounts/deployments\",\"sku\":{\"name\":\"GlobalStandard\",\"capacity\":1},\"properties\":{\"model\":{\"name\":\"Phi-4\",\"format\":\"Microsoft\",\"version\":\"7\"},\"deploymentName\":\"Phi-4\",\"capabilities\":{\"chatCompletion\":\"true\"},\"provisioningState\":\"Succeeded\"}}]}</set-body></return-response></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'azure-openai-api', 'get-deployments')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'azure-openai-api', 'post-chat-completions')]",
+      "properties": {
+        "displayName": "Create Chat Completion",
+        "method": "POST",
+        "urlTemplate": "/deployments/{model}/chat/completions",
+        "templateParameters": [
+          {
+            "name": "model",
+            "required": true,
+            "type": "string",
+            "description": "Deployment/model name"
+          }
+        ],
+        "description": "Azure OpenAI style chat completions (supports streaming)"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis', variables('apimName'), 'azure-openai-api')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', variables('apimName'), 'azure-openai-api', 'post-chat-completions', 'policy')]",
+      "properties": {
+        "format": "xml",
+        "value": "<policies><inbound><base/><choose><when condition=\"@{ var n = context.Request.MatchedParameters[&quot;model&quot;]; var allowed = new string[]{&quot;gpt-4.1&quot;,&quot;gpt-5.4-mini&quot;,&quot;gpt-5.2&quot;,&quot;text-embedding-3-large&quot;,&quot;Mistral-Large-3&quot;,&quot;Phi-4&quot;}; return !allowed.Contains(n); }\"><return-response><set-status code=\"400\" reason=\"Bad Request\"/><set-header name=\"Content-Type\" exists-action=\"override\"><value>application/json</value></set-header><set-body>{\"error\":\"unsupported model requested\"}</set-body></return-response></when></choose><authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" client-id=\"{{uami-client-id}}\" output-token-variable-name=\"msi-access-token\" ignore-error=\"false\"/><set-header name=\"Authorization\" exists-action=\"override\"><value>@(&quot;Bearer &quot; + (string)context.Variables[&quot;msi-access-token&quot;])</value></set-header><set-backend-service backend-id=\"backend-hub-foundry\"/><rewrite-uri template=\"@(&quot;/openai/deployments/&quot; + context.Request.MatchedParameters[&quot;model&quot;].Replace(&quot;.&quot;,&quot;-&quot;) + &quot;/chat/completions?api-version=2024-10-21&quot;)\"/></inbound><backend><base/></backend><outbound><base/><set-header name=\"UAIG-Backend\" exists-action=\"override\"><value>backend-hub-foundry</value></set-header><set-header name=\"UAIG-API-Type\" exists-action=\"override\"><value>azure-openai</value></set-header><set-header name=\"UAIG-Model\" exists-action=\"override\"><value>@(context.Request.MatchedParameters[&quot;model&quot;])</value></set-header><set-header name=\"UAIG-Is-Streaming\" exists-action=\"override\"><value>@(context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;,&quot;&quot;).Contains(&quot;event-stream&quot;).ToString().ToLower())</value></set-header></outbound><on-error><base/></on-error></policies>"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/apis/operations', variables('apimName'), 'azure-openai-api', 'post-chat-completions')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-sales-assistant-dev')]",
+      "properties": {
+        "displayName": "LLM-Sales-Assistant-DEV",
+        "description": "Access contract for Sales Assistant use case - Chat + embedding models (Notebook 3)",
+        "state": "published",
+        "subscriptionRequired": true,
+        "approvalRequired": false,
+        "terms": "Access to gpt-4.1, gpt-5.4-mini, text-embedding-3-large at 3000 TPM"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'llm-sales-assistant-dev', 'universal-llm-api')]",
+      "properties": {},
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-sales-assistant-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-hr-chatagent-dev')]",
+      "properties": {
+        "displayName": "LLM-HR-ChatAgent-DEV",
+        "description": "Access contract for HR ChatAgent - High throughput agent use case (Notebooks 3, 4, 8, 9)",
+        "state": "published",
+        "subscriptionRequired": true,
+        "approvalRequired": false,
+        "terms": "Access to gpt-4.1, gpt-5.4-mini at 5000 TPM with 500K monthly quota"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'llm-hr-chatagent-dev', 'universal-llm-api')]",
+      "properties": {},
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-hr-chatagent-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-support-bot-dev')]",
+      "properties": {
+        "displayName": "LLM-Support-Bot-DEV",
+        "description": "Access contract for Support Bot - Alternative models with daily quota (Notebook 3)",
+        "state": "published",
+        "subscriptionRequired": true,
+        "approvalRequired": false,
+        "terms": "Access to gpt-4.1, Mistral-Large-3 at 2000 TPM with 50K daily quota"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'llm-support-bot-dev', 'universal-llm-api')]",
+      "properties": {},
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-support-bot-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-testing-universalllm-dev')]",
+      "properties": {
+        "displayName": "LLM-Testing-UniversalLLMAllModels-DEV",
+        "description": "Test product with access to all deployed models (Notebook 2)",
+        "state": "published",
+        "subscriptionRequired": true,
+        "approvalRequired": false,
+        "terms": "Unrestricted access to all deployed models for testing"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'llm-testing-universalllm-dev', 'universal-llm-api')]",
+      "properties": {},
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-testing-universalllm-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-testing-unifiedai-dev')]",
+      "properties": {
+        "displayName": "LLM-Testing-UnifiedAI-DEV",
+        "description": "Test product for unified AI multi-backend routing (Notebook 6)",
+        "state": "published",
+        "subscriptionRequired": true,
+        "approvalRequired": false,
+        "terms": "Access to gpt-5.2 and Mistral-Large-3 via multi-backend routing"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'llm-testing-unifiedai-dev', 'unified-ai-api')]",
+      "properties": {},
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-testing-unifiedai-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-hr-piimasking-dev')]",
+      "properties": {
+        "displayName": "LLM-HR-PIIMasking-DEV",
+        "description": "PII masking and deanonymization (Notebook 5 - core feature)",
+        "state": "published",
+        "subscriptionRequired": true,
+        "approvalRequired": false,
+        "terms": "PII processing with anonymization/deanonymization for HR use case"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'llm-hr-piimasking-dev', 'universal-llm-api')]",
+      "properties": {},
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-hr-piimasking-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-compliance-piiblocking-dev')]",
+      "properties": {
+        "displayName": "LLM-Compliance-PIIBlocking-DEV",
+        "description": "PII detection and blocking policy (Notebook 5 - compliance feature)",
+        "state": "published",
+        "subscriptionRequired": true,
+        "approvalRequired": false,
+        "terms": "Detects and blocks PII patterns in requests/responses"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'llm-compliance-piiblocking-dev', 'universal-llm-api')]",
+      "properties": {},
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-compliance-piiblocking-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-hr-piianalytics-dev')]",
+      "properties": {
+        "displayName": "LLM-HR-PIIAnalytics-DEV",
+        "description": "PII analytics and telemetry (Notebook 5 - observability)",
+        "state": "published",
+        "subscriptionRequired": true,
+        "approvalRequired": false,
+        "terms": "Tracks PII events to Cosmos DB pii-usage-container"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/products/apis",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}/{2}', variables('apimName'), 'llm-hr-piianalytics-dev', 'universal-llm-api')]",
+      "properties": {},
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-hr-piianalytics-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/subscriptions",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-sales-assistant-dev-sub-01')]",
+      "properties": {
+        "scope": "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-sales-assistant-dev')]",
+        "displayName": "LLM-Sales-Assistant-DEV-SUB-01",
+        "state": "active",
+        "allowTracing": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-sales-assistant-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/subscriptions",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-hr-chatagent-dev-sub-01')]",
+      "properties": {
+        "scope": "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-hr-chatagent-dev')]",
+        "displayName": "LLM-HR-ChatAgent-DEV-SUB-01",
+        "state": "active",
+        "allowTracing": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-hr-chatagent-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/subscriptions",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-support-bot-dev-sub-01')]",
+      "properties": {
+        "scope": "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-support-bot-dev')]",
+        "displayName": "LLM-Support-Bot-DEV-SUB-01",
+        "state": "active",
+        "allowTracing": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-support-bot-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/subscriptions",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-testing-universalllm-dev-sub-01')]",
+      "properties": {
+        "scope": "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-testing-universalllm-dev')]",
+        "displayName": "LLM-Testing-UniversalLLMAllModels-DEV-SUB-01",
+        "state": "active",
+        "allowTracing": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-testing-universalllm-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/subscriptions",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-testing-unifiedai-dev-sub-01')]",
+      "properties": {
+        "scope": "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-testing-unifiedai-dev')]",
+        "displayName": "LLM-Testing-UnifiedAI-DEV-SUB-01",
+        "state": "active",
+        "allowTracing": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-testing-unifiedai-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/subscriptions",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-hr-piimasking-dev-sub-01')]",
+      "properties": {
+        "scope": "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-hr-piimasking-dev')]",
+        "displayName": "LLM-HR-PIIMasking-DEV-SUB-01",
+        "state": "active",
+        "allowTracing": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-hr-piimasking-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/subscriptions",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-compliance-piiblocking-dev-sub-01')]",
+      "properties": {
+        "scope": "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-compliance-piiblocking-dev')]",
+        "displayName": "LLM-Compliance-PIIBlocking-DEV-SUB-01",
+        "state": "active",
+        "allowTracing": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-compliance-piiblocking-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/subscriptions",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'llm-hr-piianalytics-dev-sub-01')]",
+      "properties": {
+        "scope": "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-hr-piianalytics-dev')]",
+        "displayName": "LLM-HR-PIIAnalytics-DEV-SUB-01",
+        "state": "active",
+        "allowTracing": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ApiManagement/service/products', variables('apimName'), 'llm-hr-piianalytics-dev')]"
+      ]
+    },
+    {
+      "type": "Microsoft.EventHub/namespaces",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[variables('eventHubNamespace')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "Basic",
+        "capacity": 1
+      },
+      "properties": {
+        "minimumTlsVersion": "1.2",
+        "publicNetworkAccess": "Enabled",
+        "kafkaEnabled": false
+      }
+    },
+    {
+      "type": "Microsoft.EventHub/namespaces/eventhubs",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[format('{0}/{1}', variables('eventHubNamespace'), variables('eventHubName'))]",
+      "properties": {
+        "messageRetentionInDays": 1,
+        "partitionCount": 1
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.EventHub/namespaces', variables('eventHubNamespace'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "accessTier": "Hot",
+        "minimumTlsVersion": "TLS1_2",
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.ApiManagement/service",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[variables('apimName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "StandardV2",
+        "capacity": 1
+      },
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')))]": {}
+        }
+      },
+      "properties": {
+        "publisherEmail": "governance@citadel.ai",
+        "publisherName": "Citadel Governance",
+        "virtualNetworkType": "None",
+        "publicNetworkAccess": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/loggers",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'appinsights-logger')]",
+      "properties": {
+        "loggerType": "applicationInsights",
+        "resourceId": "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
+        "credentials": {
+          "instrumentationKey": "[reference(resourceId('Microsoft.Insights/components', variables('aiName')), '2020-02-02').InstrumentationKey]"
+        },
+        "isBuffered": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.ApiManagement/service/loggers",
+      "apiVersion": "2023-09-01-preview",
+      "name": "[format('{0}/{1}', variables('apimName'), 'pii-usage-eventhub-logger')]",
+      "properties": {
+        "loggerType": "azureEventHub",
+        "description": "PII handling audit events",
+        "credentials": {
+          "endpointAddress": "[format('{0}.servicebus.windows.net', variables('eventHubNamespace'))]",
+          "identityClientId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')), '2023-01-31').clientId]",
+          "name": "[variables('eventHubName')]"
+        },
+        "isBuffered": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName'))]",
+        "[resourceId('Microsoft.EventHub/namespaces/eventhubs', variables('eventHubNamespace'), variables('eventHubName'))]",
+        "[extensionResourceId(resourceId('Microsoft.EventHub/namespaces', variables('eventHubNamespace')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.EventHub/namespaces', variables('eventHubNamespace')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')), 'AzureEventHubsDataSender'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2025-04-01-preview",
+      "name": "[variables('spokeFoundryAccountName')]",
+      "location": "[parameters('location')]",
+      "kind": "AIServices",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "S0"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "customSubDomainName": "[variables('spokeFoundryAccountName')]",
+        "publicNetworkAccess": "Enabled",
+        "allowProjectManagement": true
+      }
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts/projects",
+      "apiVersion": "2025-04-01-preview",
+      "name": "[format('{0}/{1}', variables('spokeFoundryAccountName'), variables('spokeFoundryProjectName'))]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "description": "Citadel Agentic Governance - Attendee agent development environment"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('spokeFoundryAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[variables('spokeLaName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('spokeAiName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('spokeLaName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('spokeLaName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('spokeKeyVaultName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "tenantId": "[subscription().tenantId]",
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "enableRbacAuthorization": true,
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2023-07-01",
+      "name": "[replace(variables('spokeAcrName'), '-', '')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "Basic"
+      },
+      "properties": {
+        "adminUserEnabled": false,
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', replace(variables('spokeAcrName'), '-', ''))]",
+      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', replace(variables('spokeAcrName'), '-', '')), resourceId('Microsoft.CognitiveServices/accounts/projects', variables('spokeFoundryAccountName'), variables('spokeFoundryProjectName')), '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
+        "principalId": "[reference(resourceId('Microsoft.CognitiveServices/accounts/projects', variables('spokeFoundryAccountName'), variables('spokeFoundryProjectName')), '2025-04-01-preview', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', replace(variables('spokeAcrName'), '-', ''))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts/projects', variables('spokeFoundryAccountName'), variables('spokeFoundryProjectName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts/connections",
+      "apiVersion": "2025-04-01-preview",
+      "name": "[format('{0}/{1}', variables('hubFoundryAccountName'), format('{0}-appinsights', variables('hubFoundryAccountName')))]",
+      "properties": {
+        "category": "AppInsights",
+        "target": "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
+        "authType": "ApiKey",
+        "isSharedToAll": true,
+        "credentials": {
+          "key": "[reference(resourceId('Microsoft.Insights/components', variables('aiName')), '2020-02-02').InstrumentationKey]"
+        },
+        "metadata": {
+          "ApiType": "Azure",
+          "ResourceId": "[resourceId('Microsoft.Insights/components', variables('aiName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('aiName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts/connections",
+      "apiVersion": "2025-04-01-preview",
+      "name": "[format('{0}/{1}', variables('spokeFoundryAccountName'), format('{0}-appinsights', variables('spokeFoundryAccountName')))]",
+      "properties": {
+        "category": "AppInsights",
+        "target": "[resourceId('Microsoft.Insights/components', variables('spokeAiName'))]",
+        "authType": "ApiKey",
+        "isSharedToAll": true,
+        "credentials": {
+          "key": "[reference(resourceId('Microsoft.Insights/components', variables('spokeAiName')), '2020-02-02').InstrumentationKey]"
+        },
+        "metadata": {
+          "ApiType": "Azure",
+          "ResourceId": "[resourceId('Microsoft.Insights/components', variables('spokeAiName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('spokeAiName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('spokeFoundryAccountName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "HUB_FOUNDRY_PROJECT_ENDPOINT": {
+      "type": "string",
+      "value": "[format('https://{0}.services.ai.azure.com/api/projects/{1}', variables('hubFoundryAccountName'), variables('hubFoundryProjectName'))]"
+    },
+    "SPOKE_FOUNDRY_PROJECT_ENDPOINT": {
+      "type": "string",
+      "value": "[format('https://{0}.services.ai.azure.com/api/projects/{1}', variables('spokeFoundryAccountName'), variables('spokeFoundryProjectName'))]"
+    },
+    "APIM_GATEWAY_URL": {
+      "type": "string",
+      "value": "[format('https://{0}.azure-api.net', variables('apimName'))]"
+    },
+    "SALES_ASSISTANT_SUBSCRIPTION_KEY": {
+      "type": "string",
+      "value": "[listSecrets(resourceId('Microsoft.ApiManagement/service/subscriptions', variables('apimName'), 'llm-sales-assistant-dev-sub-01'), '2023-09-01-preview').primaryKey]"
+    },
+    "SALES_ASSISTANT_SUBSCRIPTION_ID": {
+      "type": "string",
+      "value": "llm-sales-assistant-dev-sub-01"
+    },
+    "HR_CHATAGENT_SUBSCRIPTION_KEY": {
+      "type": "string",
+      "value": "[listSecrets(resourceId('Microsoft.ApiManagement/service/subscriptions', variables('apimName'), 'llm-hr-chatagent-dev-sub-01'), '2023-09-01-preview').primaryKey]"
+    },
+    "HR_CHATAGENT_SUBSCRIPTION_ID": {
+      "type": "string",
+      "value": "llm-hr-chatagent-dev-sub-01"
+    },
+    "SUPPORT_BOT_SUBSCRIPTION_KEY": {
+      "type": "string",
+      "value": "[listSecrets(resourceId('Microsoft.ApiManagement/service/subscriptions', variables('apimName'), 'llm-support-bot-dev-sub-01'), '2023-09-01-preview').primaryKey]"
+    },
+    "SUPPORT_BOT_SUBSCRIPTION_ID": {
+      "type": "string",
+      "value": "llm-support-bot-dev-sub-01"
+    },
+    "UNIVERSAL_LLM_TEST_SUBSCRIPTION_KEY": {
+      "type": "string",
+      "value": "[listSecrets(resourceId('Microsoft.ApiManagement/service/subscriptions', variables('apimName'), 'llm-testing-universalllm-dev-sub-01'), '2023-09-01-preview').primaryKey]"
+    },
+    "UNIVERSAL_LLM_TEST_SUBSCRIPTION_ID": {
+      "type": "string",
+      "value": "llm-testing-universalllm-dev-sub-01"
+    },
+    "UNIFIED_AI_TEST_SUBSCRIPTION_KEY": {
+      "type": "string",
+      "value": "[listSecrets(resourceId('Microsoft.ApiManagement/service/subscriptions', variables('apimName'), 'llm-testing-unifiedai-dev-sub-01'), '2023-09-01-preview').primaryKey]"
+    },
+    "UNIFIED_AI_TEST_SUBSCRIPTION_ID": {
+      "type": "string",
+      "value": "llm-testing-unifiedai-dev-sub-01"
+    },
+    "PII_MASKING_SUBSCRIPTION_KEY": {
+      "type": "string",
+      "value": "[listSecrets(resourceId('Microsoft.ApiManagement/service/subscriptions', variables('apimName'), 'llm-hr-piimasking-dev-sub-01'), '2023-09-01-preview').primaryKey]"
+    },
+    "PII_MASKING_SUBSCRIPTION_ID": {
+      "type": "string",
+      "value": "llm-hr-piimasking-dev-sub-01"
+    },
+    "PII_BLOCKING_SUBSCRIPTION_KEY": {
+      "type": "string",
+      "value": "[listSecrets(resourceId('Microsoft.ApiManagement/service/subscriptions', variables('apimName'), 'llm-compliance-piiblocking-dev-sub-01'), '2023-09-01-preview').primaryKey]"
+    },
+    "PII_BLOCKING_SUBSCRIPTION_ID": {
+      "type": "string",
+      "value": "llm-compliance-piiblocking-dev-sub-01"
+    },
+    "PII_ANALYTICS_SUBSCRIPTION_KEY": {
+      "type": "string",
+      "value": "[listSecrets(resourceId('Microsoft.ApiManagement/service/subscriptions', variables('apimName'), 'llm-hr-piianalytics-dev-sub-01'), '2023-09-01-preview').primaryKey]"
+    },
+    "PII_ANALYTICS_SUBSCRIPTION_ID": {
+      "type": "string",
+      "value": "llm-hr-piianalytics-dev-sub-01"
+    },
+    "LLM_BACKEND_CONFIG": {
+      "type": "string",
+      "value": "[string(variables('llmBackendConfig'))]"
+    },
+    "A2A_FOUNDRY_ACCOUNT_NAME": {
+      "type": "string",
+      "value": "[variables('spokeFoundryAccountName')]"
+    },
+    "COSMOS_ENDPOINT": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.DocumentDB/databaseAccounts', variables('cosmosAccountName')), '2024-11-15').documentEndpoint]"
+    },
+    "COSMOS_DATABASE": {
+      "type": "string",
+      "value": "[variables('cosmosDatabaseName')]"
+    },
+    "KEY_VAULT_URL": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2023-07-01').vaultUri]"
+    },
+    "KEY_VAULT_NAME": {
+      "type": "string",
+      "value": "[variables('keyVaultName')]"
+    },
+    "LOG_ANALYTICS_WORKSPACE_ID": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', variables('laName')), '2022-10-01').customerId]"
+    },
+    "LOG_ANALYTICS_WORKSPACE_NAME": {
+      "type": "string",
+      "value": "[variables('laName')]"
+    },
+    "LOG_ANALYTICS_WORKSPACE_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('laName'))]"
+    },
+    "APPLICATIONINSIGHTS_CONNECTION_STRING": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/components', variables('aiName')), '2020-02-02').ConnectionString]"
+    },
+    "APPLICATIONINSIGHTS_INSTRUMENTATION_KEY": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/components', variables('aiName')), '2020-02-02').InstrumentationKey]"
+    },
+    "SPOKE_LOG_ANALYTICS_WORKSPACE_ID": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', variables('spokeLaName')), '2022-10-01').customerId]"
+    },
+    "SPOKE_LOG_ANALYTICS_WORKSPACE_NAME": {
+      "type": "string",
+      "value": "[variables('spokeLaName')]"
+    },
+    "SPOKE_APP_INSIGHTS_CONNECTION_STRING": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/components', variables('spokeAiName')), '2020-02-02').ConnectionString]"
+    },
+    "EVENT_HUB_NAMESPACE": {
+      "type": "string",
+      "value": "[variables('eventHubNamespace')]"
+    },
+    "EVENT_HUB_CONNECTION_STRING": {
+      "type": "string",
+      "value": "[listKeys(format('{0}/AuthorizationRules/RootManageSharedAccessKey', resourceId('Microsoft.EventHub/namespaces', variables('eventHubNamespace'))), '2022-10-01-preview').primaryConnectionString]"
+    },
+    "STORAGE_ACCOUNT_NAME": {
+      "type": "string",
+      "value": "[variables('storageAccountName')]"
+    },
+    "STORAGE_ACCOUNT_CONNECTION_STRING": {
+      "type": "string",
+      "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', variables('storageAccountName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2023-01-01').keys[0].value)]"
+    },
+    "APIM_NAME": {
+      "type": "string",
+      "value": "[variables('apimName')]"
+    },
+    "APIM_IDENTITY_PRINCIPAL_ID": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('apimMIName')), '2023-01-31').principalId]"
+    },
+    "HUB_FOUNDRY_ACCOUNT_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName'))]"
+    },
+    "HUB_FOUNDRY_MANAGED_IDENTITY_PRINCIPAL_ID": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('hubFoundryAccountName')), '2025-04-01-preview', 'full').identity.principalId]"
+    },
+    "SPOKE_FOUNDRY_ACCOUNT_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.CognitiveServices/accounts', variables('spokeFoundryAccountName'))]"
+    },
+    "SPOKE_FOUNDRY_MANAGED_IDENTITY_PRINCIPAL_ID": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('spokeFoundryAccountName')), '2025-04-01-preview', 'full').identity.principalId]"
+    },
+    "SPOKE_FOUNDRY_ACCOUNT_NAME": {
+      "type": "string",
+      "value": "[variables('spokeFoundryAccountName')]"
+    },
+    "SPOKE_FOUNDRY_PROJECT_NAME": {
+      "type": "string",
+      "value": "[variables('spokeFoundryProjectName')]"
+    },
+    "SPOKE_KEY_VAULT_NAME": {
+      "type": "string",
+      "value": "[variables('spokeKeyVaultName')]"
+    },
+    "SPOKE_ACR_NAME": {
+      "type": "string",
+      "value": "[variables('spokeAcrName')]"
+    },
+    "SPOKE_ACR_LOGIN_SERVER": {
+      "type": "string",
+      "value": "[format('{0}.azurecr.io', replace(variables('spokeAcrName'), '-', ''))]"
+    },
+    "RESOURCE_GROUP_NAME": {
+      "type": "string",
+      "value": "[resourceGroup().name]"
+    },
+    "LOCATION": {
+      "type": "string",
+      "value": "[parameters('location')]"
+    },
+    "COSMOS_ACCOUNT_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.DocumentDB/databaseAccounts', variables('cosmosAccountName'))]"
+    },
+    "APIM_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.ApiManagement/service', variables('apimName'))]"
+    },
+    "KEY_VAULT_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+    },
+    "APP_INSIGHTS_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Insights/components', variables('aiName'))]"
+    },
+    "SPOKE_FOUNDRY_PROJECT_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.CognitiveServices/accounts/projects', variables('spokeFoundryAccountName'), variables('spokeFoundryProjectName'))]"
+    },
+    "SPOKE_KEY_VAULT_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.KeyVault/vaults', variables('spokeKeyVaultName'))]"
+    },
+    "SPOKE_LOG_ANALYTICS_WORKSPACE_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('spokeLaName'))]"
+    },
+    "SPOKE_APP_INSIGHTS_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Insights/components', variables('spokeAiName'))]"
+    },
+    "SPOKE_ACR_RESOURCE_ID": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.ContainerRegistry/registries', replace(variables('spokeAcrName'), '-', ''))]"
+    }
+  }
+}

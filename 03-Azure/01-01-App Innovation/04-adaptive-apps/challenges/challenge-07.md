@@ -1,6 +1,6 @@
 # Challenge 07 - Adapt Identity Services - Configure User Authentication
 
-[< Previous Challenge](challenge-06.md) - **[Home](../Readme.md)** - [Next Challenge >](challenge-08.md)
+[< Previous Challenge](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/challenges/challenge-06.md) - **[Home](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/Readme.md)** - [Next Challenge >](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/challenges/challenge-09.md)
 
 Estimated time: 60-90 minutes | Difficulty: intermediate to advanced
 
@@ -46,6 +46,13 @@ Keycloak instance. The matching realm names do not share users or configuration;
 the `master` realm for Keycloak administration.
 
 ## Additional prerequisites
+
+This is an **optional extension** to the hosted baseline. The Entra
+enterprise-application/SAML setup requires tenant permissions that lab
+resource-group Owner does not grant; arrange organizer assistance before starting.
+Use Bash with the sourced Console environment. Hosted-browser OIDC needs separate
+validation; see [Console setup](https://github.com/microsoft/MicroHack/blob/main/03-Azure/01-01-App%20Innovation/04-adaptive-apps/docs/console-setup.md#optional-extensions-and-hosted-browsers).
+Challenge 08 is not yet published; continue from 07 to 09.
 
 - Completion of Challenge 06 with healthy `core-keycloak` workloads on both clusters.
 - A Microsoft Entra role that can create/configure the workshop enterprise application

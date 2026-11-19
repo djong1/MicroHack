@@ -1,0 +1,74 @@
+{
+  // Fraud Intelligence Hack — Codespaces / Dev Container
+  // Python agents + Microsoft Agent Framework orchestration + Azure tooling.
+  "name": "Azure / AI / Fraud Intelligence",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  
+  "features": {
+    "ghcr.io/devcontainers/features/azure-cli:1": {
+      "version": "latest",
+      "installBicep": true
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    },
+    "ghcr.io/devcontainers/features/powershell:1": {
+      "version": "latest"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Python
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+        "ms-toolsai.jupyter",
+        // Azure / infra
+        "ms-azuretools.vscode-docker",
+        "ms-azuretools.vscode-bicep",
+        "ms-azuretools.vscode-azurefunctions",
+        "ms-vscode.powershell",
+        // AI / Foundry tooling
+        "ms-windows-ai-studio.windows-ai-studio",
+        // GitHub Copilot
+        "GitHub.copilot",
+        "GitHub.copilot-chat"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  },
+
+  // Fraud Alert API / DevUI (8080), Functions (7071), hosted agent (8088), Jupyter (8888)
+  "forwardPorts": [7071, 8080, 8088, 8888],
+  "portsAttributes": {
+    "7071": { "label": "Financial Evidence MCP" },
+    "8080": { "label": "Fraud Alert API / DevUI" },
+    "8088": { "label": "Foundry Hosted Agent" },
+    "8888": { "label": "Jupyter" }
+  },
+
+  "postAttachCommand": "bash /workspaces/${localWorkspaceFolderBasename}/.devcontainer/welcome.sh",
+
+  "remoteUser": "vscode",
+
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}/03-Azure/01-04-AI/07_Fraud_Intelligence",
+
+  "remoteEnv": {
+    "hackFolder": "/workspaces/${localWorkspaceFolderBasename}/03-Azure/01-04-AI/07_Fraud_Intelligence",
+    "walkthroughHome": "/workspaces/${localWorkspaceFolderBasename}/03-Azure/01-04-AI/07_Fraud_Intelligence/walkthrough",
+    "challengesHome": "/workspaces/${localWorkspaceFolderBasename}/03-Azure/01-04-AI/07_Fraud_Intelligence/challenges"
+  }
+}

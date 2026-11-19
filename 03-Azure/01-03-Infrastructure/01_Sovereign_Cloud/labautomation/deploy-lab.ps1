@@ -54,15 +54,9 @@ if($PreferredLocation.Count -gt 0) {
     $deploymentLocations = @('swedencentral')
 }
 
-$selection = Get-MhhConfidentialComputeSelection -SubscriptionId $SubscriptionId
-$validCandidates = @(Get-MhhConfidentialComputeCandidates -PreferredLocation $deploymentLocations)
-$selectedCandidate = $validCandidates |
-    Where-Object {
-        $_.Location -ieq $selection.Location -and
-        $_.VmSize -ieq $selection.VmSize -and
-        $_.QuotaName -ieq $selection.QuotaName
-    } |
-    Select-Object -First 1
+$existingCompute = Get-MhhSovereignExistingCompute -SubscriptionId $SubscriptionId `
+    -NameSuffixes @($stableHash.Substring(0, 8)) -ResourceGroupName $ResourceGroupName
+$selectedCandidate = Get-MhhSovereignResumeCandidate -SubscriptionId $SubscriptionId -ExistingCompute $existingCompute
 if(-not $selectedCandidate) {
     throw 'The shared subscription preparation did not persist a valid confidential compute selection for this deployment.'
 }
@@ -70,14 +64,13 @@ if(-not $selectedCandidate) {
 $confidentialVmSize = $selectedCandidate.VmSize
 $confidentialQuotaName = $selectedCandidate.QuotaName
 $deploymentLocations = @($selectedCandidate.Location)
-$quotaRequirements = @(
-    @{ Name = $confidentialQuotaName; Required = 4 }
-    @{ Name = 'StandardDSv5Family'; Required = 12 }
-    @{ Name = 'cores'; Required = 16 }
-)
+$quotaRequirements = @(Get-MhhSovereignAdditionalCompute -Candidate $selectedCandidate -ExistingCompute $existingCompute)
 $regionReadinessSummary = @()
 foreach($candidateLocation in $deploymentLocations) {
-    $requiredVmSizes = @($confidentialVmSize, 'Standard_D4s_v5')
+    $requiredVmSizes = @(
+        if (($quotaRequirements | Where-Object Name -eq $confidentialQuotaName).Additional -gt 0) { $confidentialVmSize }
+        if (($quotaRequirements | Where-Object Name -eq 'StandardDSv5Family').Additional -gt 0) { 'Standard_D4s_v5' }
+    )
     $availableVmSizes = Get-AzComputeResourceSku -Location $candidateLocation -ErrorAction Stop |
         Where-Object {
             $_.ResourceType -ieq 'virtualMachines' -and
@@ -88,8 +81,7 @@ foreach($candidateLocation in $deploymentLocations) {
     $unavailableVmSizes = @($requiredVmSizes | Where-Object { $_ -inotin $availableVmSizes })
 
     if($unavailableVmSizes.Count -gt 0) {
-        $regionReadinessSummary += "${candidateLocation}: unavailable VM sizes $($unavailableVmSizes -join ', ')"
-        continue
+        throw "${candidateLocation}: unavailable VM sizes $($unavailableVmSizes -join ', ') for missing participant compute."
     }
 
     $regionalUsage = Get-AzVMUsage -Location $candidateLocation -ErrorAction Stop
@@ -100,10 +92,10 @@ foreach($candidateLocation in $deploymentLocations) {
         $current = if($null -eq $quota) { 0 } else { $quota.CurrentValue }
         $limit = if($null -eq $quota) { 0 } else { $quota.Limit }
         $available = $limit - $current
-        $regionReadinessSummary += "${candidateLocation}/$($requirement.Name): ${current}/${limit} vCPUs used"
+        $regionReadinessSummary += "${candidateLocation}/$($requirement.Name): ${current}/${limit} vCPUs used; $($requirement.Existing) already allocated to this lab; $($requirement.Additional) additional required"
 
-        if($available -lt $requirement.Required) {
-            throw "The shared compute selection is no longer ready ($($regionReadinessSummary -join '; ')). $($requirement.Required) available $($requirement.Name) vCPUs are required per participant."
+        if($requirement.Additional -gt 0 -and $available -lt $requirement.Additional) {
+            throw "The shared compute selection is no longer ready ($($regionReadinessSummary -join '; ')). $($requirement.Additional) additional $($requirement.Name) vCPUs are required for this participant."
         }
     }
 }
@@ -118,8 +110,9 @@ $effectiveLocation = $deploymentLocations[0]
 # Provider registration is initiated once per subscription by shared-deploy-lab.ps1.
 # Registration is asynchronous, so verify the providers required by the shared lab.
 $sovereignLabProviders = @(
-    'Microsoft.Attestation',
     'Microsoft.Compute',
+    'Microsoft.ContainerInstance',
+    'Microsoft.ContainerRegistry',
     'Microsoft.ContainerService',
     'Microsoft.ManagedIdentity',
     'Microsoft.Network'
@@ -145,9 +138,8 @@ foreach($providerNamespace in $sovereignLabProviders) {
 # on retries, so subscription and resource-group role assignments are applied after it.
 $nameSuffix = $stableHash.Substring(0, 8)
 $k3sAdminPassword = New-MhhStablePassword -Purpose 'adaptive-apps-k3s-admin' -Length 24
-$cvmAdminPassword = New-MhhStablePassword -Purpose 'sovereign-cvm-admin' -Length 24
 
-Write-Host "Deploying the shared Sovereign Cloud platform for Challenges 4, 5, and 7..."
+Write-Host "Deploying the shared Sovereign Cloud platform for Challenges 5 and 7..."
 $sovereignLabResult = Invoke-MhhDeploymentWithRegionFallback `
     -PreferredLocations      $deploymentLocations `
     -ResourceGroupName       $ResourceGroupName `
@@ -156,13 +148,13 @@ $sovereignLabResult = Invoke-MhhDeploymentWithRegionFallback `
     -TemplateParameterObject @{
         nameSuffix = $nameSuffix
         adminPassword = $k3sAdminPassword
-        cvmAdminPassword = $cvmAdminPassword
         confidentialVmSize = $confidentialVmSize
     } `
     -DeploymentNamePrefix    'sovereign-lab' `
     -Tag                     @{
         workload = 'sovereign-lab'
-        challenges = '4,5,7'
+        challenges = '5,7'
+        CostControl = 'Ignore'
     }
 
 # Assign the lab-specific subscription-scoped RBAC (Security Reader + Resource Policy
@@ -170,6 +162,21 @@ $sovereignLabResult = Invoke-MhhDeploymentWithRegionFallback `
 $deploymentName = "lab-$stableHash"
 
 Write-Host "Assigning subscription-scoped lab RBAC to participant $($AllowedEntraUserIds[0])..."
+Update-MhhToken | Out-Null
+$securityReaderScope = "/subscriptions/$SubscriptionId"
+$securityReaderRoleId = '39bc4728-0917-49c7-9d2c-d95423bc2eb4'
+$existingSecurityReader = @(Get-AzRoleAssignment `
+    -ObjectId $AllowedEntraUserIds[0] `
+    -RoleDefinitionId $securityReaderRoleId `
+    -Scope $securityReaderScope `
+    -ErrorAction Stop | Where-Object {
+        $_.ObjectId -ieq $AllowedEntraUserIds[0] -and
+        $_.Scope -ieq $securityReaderScope -and
+        $_.RoleDefinitionId -ieq $securityReaderRoleId
+    })
+if ($existingSecurityReader.Count -gt 0) {
+    Write-Host 'Reusing the existing subscription Security Reader assignment without changing its ID.'
+}
 New-AzSubscriptionDeployment `
     -Name                    $deploymentName `
     -Location                $effectiveLocation `
@@ -177,16 +184,13 @@ New-AzSubscriptionDeployment `
     -TemplateParameterObject @{
         userObjectId = $AllowedEntraUserIds[0]
         resourceGroupName = $ResourceGroupName
+        assignSecurityReader = ($existingSecurityReader.Count -eq 0)
     } | Out-Null
 
 @{"HackboxCredential" = @{ name = "Sovereign Lab Region"; value = $sovereignLabResult.LocationUsed; note = "Region selected after capacity checks" }}
-@{"HackboxCredential" = @{ name = "Confidential VM Size"; value = $confidentialVmSize; note = "AMD SEV-SNP size selected during shared preparation" }}
+@{"HackboxCredential" = @{ name = "AKS Confidential Node Size"; value = $confidentialVmSize; note = "Two Ubuntu AMD SEV-SNP nodes; four confidential vCPUs per participant" }}
 @{"HackboxCredential" = @{ name = "Sovereign Lab AKS Cluster"; value = $sovereignLabResult.Outputs.aksClusterName; note = "Shared by Challenges 5 and 7" }}
 @{"HackboxCredential" = @{ name = "AKS Confidential Node Pool"; value = $sovereignLabResult.Outputs.confidentialNodePoolName; note = "Challenge 5" }}
-@{"HackboxCredential" = @{ name = "Confidential VM"; value = $sovereignLabResult.Outputs.confidentialVmName; note = "Challenge 4" }}
-@{"HackboxCredential" = @{ name = "Confidential VM Admin Username"; value = "azureuser"; note = $sovereignLabResult.Outputs.confidentialVmName }}
-@{"HackboxCredential" = @{ name = "Confidential VM Admin Password"; value = $cvmAdminPassword; note = $sovereignLabResult.Outputs.confidentialVmName }}
-@{"HackboxCredential" = @{ name = "Attestation Provider"; value = $sovereignLabResult.Outputs.attestationProviderName; note = $sovereignLabResult.Outputs.attestationProviderUri }}
 @{"HackboxCredential" = @{ name = "Sovereign Lab K3s VM"; value = $sovereignLabResult.Outputs.k3sVmName; note = "Private local/edge execution environment" }}
 @{"HackboxCredential" = @{ name = "Sovereign Lab Bastion"; value = $sovereignLabResult.Outputs.bastionName; note = "Shared private access path" }}
 @{"HackboxCredential" = @{ name = "K3s VM Admin Username"; value = "azureuser"; note = $sovereignLabResult.Outputs.k3sVmName }}

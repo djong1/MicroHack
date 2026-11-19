@@ -6,19 +6,23 @@
 
 ## Goal
 
-Build a Foundry prompt agent with Web Search + Fabric Data Agent tools to sense a real-world demand change.
+Build a Foundry prompt agent with Web Search + Fabric IQ (connected to your published Fabric Data Agent) to sense a real-world demand change.
 
 ## Solution walkthrough
 
 ### Agent creation
 
-Navigate to **Agents → + New agent**. If the portal shows a wizard, select **Prompt agent** (not Hosted agent).
+Navigate to **Agents → New agent**. If the portal shows a wizard, select **Prompt agent** (not Hosted agent).
+
+### Connecting the Data Agent
+
+Use **Tools → Add → Add tools → Fabric IQ (OneLake Catalog)**, filter by **Data agent**, and select the team's `inventory-hack-agent` (check its **Location** is the attendee's own workspace). The earlier **Fabric Data Agent** tool, which asked for a Workspace ID and Agent ID, is deprecated and greyed out in the catalogue; it retires on 6 November 2026. The new connection is named after the Data Agent (`inventoryhackagent`), and Challenges 3 and 4 reuse it from the **Configured** tab.
 
 ### Common issues
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Fabric tool call returns "unauthorized" | The Fabric Data Agent isn't published, or your F2 capacity is paused | You own this agent — confirm the setup notebook finished **publishing** it (Challenge 1) and that your F2 capacity is **running** (Azure portal → your Fabric capacity → **Resume**) |
+| Fabric tool call returns "unauthorized" | The Fabric Data Agent isn't published, or your Fabric capacity is paused | You own this agent — confirm the setup notebook finished **publishing** it (Challenge 1) and that your Fabric capacity is **running** (Azure portal → your Fabric capacity → **Resume**) |
 | Web Search returns no results | Web Search tool not enabled in the project | Go to **Project settings** and verify Web Search is listed under enabled tools |
 | Agent ignores the Fabric tool (trace shows only Web Search, or it replies "I can't access your data") | `gpt-5.4-mini` is a GPT-5 reasoning model and may skip a tool it treats as optional; the portal may also flag the Fabric tool as "not supported" (cosmetic — it still runs via the Responses API) | Keep the **IMPORTANT - tool use** block in the instructions **and set tool choice = required** in the run settings so the Fabric Data Agent tool is always invoked. |
 

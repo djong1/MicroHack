@@ -44,7 +44,7 @@ This human-in-the-loop pattern is critical for **agentic AI in enterprise settin
          Date: <today>
          Requested by: Inventory Optimisation Agent
          ─────────────────────────────────────────────
-         | Line | SKU | Warehouse | Qty | Unit Cost (est.) | Line Total |
+         | Line | SKU | Location | Qty | Unit Cost (est.) | Line Total |
          ─────────────────────────────────────────────
          TOTAL ESTIMATED VALUE: $X,XXX
          ─────────────────────────────────────────────
@@ -69,17 +69,17 @@ This human-in-the-loop pattern is critical for **agentic AI in enterprise settin
    (from today's date) after a YES; never fabricate a real ERP order ID.
    ```
 
-5. Click **Save** — you'll attach the Fabric Data Agent tool next.
+5. Click **Save** — you'll attach Fabric IQ next.
 
-### Part B — Add the Fabric Data Agent tool (10 min)
+### Part B — Add Fabric IQ for governed costs (10 min)
 
 The "act" step — submitting the purchase order — is **simulated by the agent itself**. In the current **New Foundry** portal, prompt agents don't expose a no-code custom-function tool: the tool catalogue's **Custom** tab offers only **OpenAPI**, **MCP**, and **Agent2Agent (A2A)** connectors, which all require a hosted endpoint. Because the Fabric Data Agent is **read-only**, the agent closes the loop by *generating* a submission confirmation on approval — which delivers the exact human-in-the-loop teaching point with zero infrastructure.
 
-You only need one tool here:
+You need exactly **one** tool here — Fabric IQ, connected to your Data Agent — so you must also remove the Web Search tool that new prompt agents ship with by default:
 
-1. In the agent editor, expand **Tools** and select **Add**.
-2. On the **Configured** tab, choose **Fabric Data Agent** and connect the existing **`inventory-hack-agent`** connection — the agent needs it to look up unit costs from the `Products` table when building the PO.
-3. Select **Add tool**, then **Save**.
+1. In the agent editor, expand **Tools**. New prompt agents ship with **Web Search** attached by default — **delete it**, or `gpt-5.4-mini` will reach for the web instead of the governed cost data.
+2. Select **Add → Add tools**, and on the **Configured** tab choose the existing **`inventoryhackagent`** connection from Challenge 2 (the same one used in Challenge 3), then **Add tool**. The agent needs it to look up unit costs from the `Products` table when building the PO. Do not use the deprecated **Fabric Data Agent** tool.
+3. Select **Save**. Confirm the **only** tool left is Fabric IQ.
 
 > [!NOTE]
 > **Want a *real* submit action?** In production you'd add an **OpenAPI tool** (New Foundry) or a custom function that writes to the `ReplenishmentOrders` table / your ERP. That needs a hosted endpoint, so it's out of scope for this no-code lab — see **Part E — Stretch** at the end of this challenge.
@@ -90,18 +90,26 @@ You only need one tool here:
 > This is the payoff: running the full sense → plan → approve → act cycle in one session.
 
 1. Open a **new chat** in the Agents playground with `replenishment-action-agent`.
-2. Paste the recommendation table from Challenge 3 as your first message.
+2. Paste the recommendation table from Challenge 3 as your first message. If you don't have it handy, use this sample:
+
+   ```text
+   | SKU  | Location | Current Stock | Suggested Reorder Qty | Priority |
+   |------|----------|---------------|-----------------------|----------|
+   | P004 | Seattle  | 6             | 18                    | CRITICAL |
+   | P004 | Portland | 8             | 16                    | CRITICAL |
+   | P006 | Portland | 12            | 8                     | CRITICAL |
+   ```
 3. The agent should present a formatted purchase order proposal.
 4. **Test the approval flow:**
    - First, reply `MODIFY 1 50` — adjust the first line quantity. Verify the agent updates and re-presents the order.
    - Then reply `YES` — verify the agent responds with the simulated submission confirmation (`✅ Purchase order PO-... submitted to ERP.`).
 
    ![Playground showing the MODIFY 1 50 adjustment followed by a YES approval and the submission confirmation](../images/challenge-03-approval-flow.png)
-5. Open **Tracing** and find this run. Trace the complete sequence:
-   - Model call (format PO from the recommendation) → **Fabric tool call** (unit-cost lookup from `Products`) → model call (present proposal) → model call (apply MODIFY, re-present) → model call (confirm submission after YES).
+5. Open the agent's **Traces** tab, select the **Trace ID** of this run and find it in the **Trajectories** tree. (The **Traces** link under an answer in the playground opens the same tree as a popup for the whole conversation, as in the screenshot below.) Trace the complete sequence:
+   - Three **Invoke Agent** spans, one per message. Only the first has an **Execute Tool** span (the unit-cost lookup from `Products`), followed by its `Chat` span that presents the proposal. The **MODIFY** and **YES** turns have only a `Chat` span, because the agent reuses the costs it already has.
 6. **Discuss with your team:** At which step did the human add value that an automated pipeline could not?
 
-![Trace view showing the model calls and the Fabric unit-cost lookup across the approval cycle](../images/challenge-03-trace.png)
+![The conversation trace for the approval run: three Invoke Agent spans, with the Fabric unit-cost lookup only in the first](../images/challenge-03-trace.png)
 
 ### Part D — Reflect on the full loop (optional, 10 min)
 
@@ -127,7 +135,7 @@ Either path turns the simulated confirmation into a genuine side effect while ke
 
 ## 🏁 Success criteria
 
-- [ ] The `replenishment-action-agent` prompt agent exists on `gpt-5.4-mini` with the Fabric Data Agent tool attached.
+- [ ] The `replenishment-action-agent` prompt agent exists on `gpt-5.4-mini` with Fabric IQ connected (and the default Web Search tool removed).
 - [ ] A test run successfully presents a formatted purchase order proposal (per-line cost table with a total).
 - [ ] The MODIFY flow works correctly — the agent updates the specified line, recalculates the total, and re-presents.
 - [ ] A YES reply produces the simulated submission confirmation (`✅ Purchase order PO-... submitted`).

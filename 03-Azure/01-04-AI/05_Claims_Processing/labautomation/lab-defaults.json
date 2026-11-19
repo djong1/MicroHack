@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/MicroHack/refs/heads/main/lab-defaults-schema.json",
+  "groups": [],
+  "deploymentType": "resourcegroup-with-subscriptionowner",
+  "labsPerSubscription": 4,
+  "preferredLocation": "swedencentral, francecentral, germanywestcentral",
+  "estimatedDailyCostsUsd": 8.0,
+  "Quality": "Preview"
+}
