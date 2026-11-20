@@ -170,6 +170,20 @@ Workstation rad configuration
 
 ### 1. Select and verify AKS
 
+If the `aks-adaptive-apps` context is missing, connect to your lab's AKS cluster:
+
+```bash
+export AZURE_SUBSCRIPTION="${AZURE_SUBSCRIPTION:-<subscription-id>}"
+export RESOURCE_GROUP="${RESOURCE_GROUP:-<lab-resource-group>}"
+unset KUBECONFIG
+az aks get-credentials \
+  --resource-group "$RESOURCE_GROUP" \
+  --name aks-adaptive-apps \
+  --context aks-adaptive-apps
+```
+
+Then select and verify it:
+
 ```bash
 unset KUBECONFIG
 kubectl config use-context "$AKS_CONTEXT"
@@ -198,7 +212,7 @@ Choose **one** identity option. Both use AKS OIDC federation with no client secr
 See Microsoft's [AKS workload identity guide](https://learn.microsoft.com/azure/aks/workload-identity-deploy-cluster)
 for the managed identity and federated credential commands.
 
-#### Option A: user-assigned managed identity (required for LAB; also supported for BYOS)
+#### Option A: user-assigned managed identity (required for LAB and MicroHack Console; also supported for BYOS)
 
 Create the identity inside the supplied lab resource group. These are Azure Resource
 Manager operations, not tenant app/SP creation. The explicit principal object ID
@@ -257,7 +271,7 @@ export IDENTITY_PRINCIPAL_ID="$(az ad sp show \
   --id "$APPLICATION_CLIENT_ID" --query id --output tsv)"
 ```
 
-For each Radius service account, create a federated credential. The example below is
+BYOS: For each Radius service account, create a federated credential. The example below is
 for `applications-rp`; repeat it for `bicep-de`, `ucp`, and `dynamic-rp`, changing
 both `name` and `subject`:
 

@@ -17,7 +17,7 @@ readonly K3S_API_PORT="6443"
 readonly KUBECONFIG_CHUNK_SIZE="1800"
 
 AZURE_LOCATION="${AZURE_LOCATION:-westeurope}"
-RESOURCE_GROUP="${RESOURCE_GROUP:-rg-adaptive-apps}"
+RESOURCE_GROUP="${RESOURCE_GROUP:-}"
 VNET_NAME="${VNET_NAME:-vnet-adaptive-apps}"
 VNET_PREFIX="${VNET_PREFIX:-10.42.0.0/16}"
 K3S_SUBNET_NAME="${K3S_SUBNET_NAME:-snet-k3s}"
@@ -27,6 +27,7 @@ K3S_NSG_NAME="${K3S_NSG_NAME:-nsg-adaptive-apps-k3s}"
 K3S_NIC_NAME="${K3S_NIC_NAME:-nic-adaptive-apps-k3s}"
 K3S_VM_NAME="${K3S_VM_NAME:-vm-adaptive-apps-k3s}"
 K3S_VM_SIZE="${K3S_VM_SIZE:-Standard_D4s_v5}"
+K3S_VERSION="${K3S_VERSION:-v1.33.13+k3s1}"
 # Four-vCPU, 16 GiB x64 sizes in decreasing order of preference. Regions and
 # subscriptions differ in what they offer, so the script falls back automatically.
 # These are Azure VM sizes: an arm64 workstation still provisions an x64 Azure VM,
@@ -69,6 +70,14 @@ Usage: bash resources/prepare-k3s-azure-vm.sh [provision|connect|status|disconne
 
 Required for provision/connect:
   AZURE_SUBSCRIPTION   Target Azure subscription ID.
+  RESOURCE_GROUP       Lab Azure resource group.
+
+Provision pins K3s to v1.33.13+k3s1 by default. K3S_VERSION can select another
+explicit release. An existing installation must match; no automatic version
+changes are performed.
+
+For status/disconnect of a running tunnel, retain the same RESOURCE_GROUP so its
+process identity can be verified. These modes do not require Azure authentication.
 
 The kubeconfig endpoint defaults to https://127.0.0.1:16443. Override the local port
 with K3S_LOCAL_PORT before provisioning and on every later connect command.
@@ -89,6 +98,11 @@ case "$MODE" in
     ;;
 esac
 
+if [[ "$MODE" == "provision" && ! "$K3S_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+$ ]]; then
+  echo "K3S_VERSION must be an exact release such as v1.33.13+k3s1." >&2
+  exit 2
+fi
+
 is_integer() {
   [[ "$1" =~ ^[0-9]+$ ]]
 }
@@ -106,6 +120,7 @@ tunnel_pid_matches() {
   local pid="$1"
   local command_line
 
+  [[ -n "$RESOURCE_GROUP" ]] || return 1
   is_pid_running "$pid" || return 1
   [[ -r "/proc/${pid}/cmdline" ]] || return 1
   command_line="$(tr '\0' ' ' <"/proc/${pid}/cmdline")"
@@ -216,6 +231,10 @@ disconnect_tunnel() {
 }
 
 if [[ "$MODE" == "status" ]]; then
+  if [[ -z "$RESOURCE_GROUP" && -f "$TUNNEL_PID_FILE" ]]; then
+    echo "Set RESOURCE_GROUP to the lab Azure resource group to verify the recorded tunnel." >&2
+    exit 1
+  fi
   if tunnel_status; then
     exit 0
   fi
@@ -223,11 +242,18 @@ if [[ "$MODE" == "status" ]]; then
 fi
 
 if [[ "$MODE" == "disconnect" ]]; then
+  if [[ -z "$RESOURCE_GROUP" && -f "$TUNNEL_PID_FILE" ]]; then
+    echo "Set RESOURCE_GROUP to the lab Azure resource group to verify the recorded tunnel." >&2
+    exit 1
+  fi
   if disconnect_tunnel; then
     exit 0
   fi
   exit 1
 fi
+
+: "${AZURE_SUBSCRIPTION:?Set AZURE_SUBSCRIPTION to the target subscription ID.}"
+: "${RESOURCE_GROUP:?Set RESOURCE_GROUP to the lab Azure resource group.}"
 
 for command_name in az base64 cut grep install jq kubectl nohup sed tail timeout tr wc; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -236,7 +262,6 @@ for command_name in az base64 cut grep install jq kubectl nohup sed tail timeout
   }
 done
 
-: "${AZURE_SUBSCRIPTION:?Set AZURE_SUBSCRIPTION to the target subscription ID.}"
 if ! is_integer "$K3S_LOCAL_PORT"; then
   echo "K3S_LOCAL_PORT must be an unprivileged TCP port from 1024 through 65535." >&2
   exit 1
@@ -943,6 +968,16 @@ K3S_INSTALL_RESPONSE="$(az vm run-command invoke \
   --command-id RunShellScript \
   --scripts "
 set -eu
+required_version='${K3S_VERSION}'
+if command -v k3s >/dev/null 2>&1; then
+  installed_version=\"\$(k3s --version)\"
+  installed_version=\"\${installed_version#k3s version }\"
+  installed_version=\"\${installed_version%% *}\"
+  if [ \"\$installed_version\" != \"\$required_version\" ]; then
+    printf 'K3S_VERSION_MISMATCH: Existing K3s version %s does not match required %s. Automatic version changes are not supported. Use a fresh lab VM.\n' \"\$installed_version\" \"\$required_version\" >&2
+    exit 1
+  fi
+fi
 install -d -m 0755 /etc/rancher/k3s
 cat >/etc/rancher/k3s/config.yaml <<EOF
 tls-san:
@@ -961,7 +996,7 @@ else
     exit 1
   fi
   curl -sfL https://get.k3s.io --output /tmp/install-k3s.sh
-  sh /tmp/install-k3s.sh
+  INSTALL_K3S_VERSION=\"\$required_version\" sh /tmp/install-k3s.sh
   rm -f /tmp/install-k3s.sh
 fi
 systemctl is-active --quiet k3s
@@ -969,6 +1004,11 @@ printf 'K3S_INSTALL_OK\n'
 " \
   --output json)"
 readonly K3S_INSTALL_RESPONSE
+K3S_VERSION_ERROR="$(jq -r '.value[]?.message // empty | split("\n")[] | select(startswith("K3S_VERSION_MISMATCH:"))' <<<"$K3S_INSTALL_RESPONSE")"
+if [[ -n "$K3S_VERSION_ERROR" ]]; then
+  printf '%s\n' "$K3S_VERSION_ERROR" >&2
+  exit 1
+fi
 if jq -r '.value[]?.message // empty' <<<"$K3S_INSTALL_RESPONSE" |
   grep -qx 'K3S_NO_OUTBOUND'; then
   echo "The K3s VM has no outbound internet access, so the installer could not be downloaded." >&2

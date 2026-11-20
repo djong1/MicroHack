@@ -25,8 +25,8 @@ BeforeAll {
     function kubectl { }
     function rad { }
     $subscription = '11111111-1111-1111-1111-111111111111'
-    $postgresCurrent = '[{"supportedFeatures":[{"name":"OfferRestricted","status":"Disabled"}],"supportedServerVersions":[{"name":"16"}],"supportedServerEditions":[{"name":"Burstable","supportedServerSkus":[{"name":"Standard_B1ms"}]}]}]'
-    $postgresLegacy = '[{"status":"Available","supportedFlexibleServerEditions":[{"name":"Burstable","supportedServerVersions":[{"name":"16","supportedVcores":[{"name":"Standard_B1ms"}]}]}]}]'
+    $postgresCurrent = '[{"supportedFeatures":[{"name":"OfferRestricted","status":"Disabled"}],"supportedServerVersions":[{"name":"16"}],"supportedServerEditions":[{"name":"GeneralPurpose","supportedServerSkus":[{"name":"Standard_D4ds_v5"}]}]}]'
+    $postgresLegacy = '[{"status":"Available","supportedFlexibleServerEditions":[{"name":"GeneralPurpose","supportedServerVersions":[{"name":"16","supportedVcores":[{"name":"Standard_D4ds_v5"}]}]}]}]'
 }
 
 Describe 'Regional preflight' {
@@ -70,8 +70,8 @@ Describe 'Regional preflight' {
         $script:postgres = $postgresLegacy
         Test-AdaptiveRegion -Location westeurope -LabCount 2 | Should -Be 'westeurope'
     }
-    It 'rejects a region without PostgreSQL 16 B1ms' {
-        $script:postgres = $postgresCurrent.Replace('Standard_B1ms', 'Standard_D2s_v3')
+    It 'rejects a region without PostgreSQL 16 D4ds_v5' {
+        $script:postgres = $postgresCurrent.Replace('Standard_D4ds_v5', 'Standard_B1ms')
         { Test-AdaptiveRegion -Location westeurope -LabCount 2 } | Should -Throw '*PostgreSQL 16*'
     }
     It 'rejects offer-restricted PostgreSQL' {
@@ -464,6 +464,7 @@ Describe 'Infrastructure-only participant hook' {
     }
     It 'fails closed on <Failure> without declaring infrastructure ready' -ForEach @(
         @{ Failure = 'K3s'; Error = '*readiness marker*' }
+        @{ Failure = 'K3s version'; Error = '*Existing K3s version v1.37.2+k3s1 does not match required v1.33.13+k3s1*' }
         @{ Failure = 'AKS exit'; Error = '*AKS node readiness failed*' }
         @{ Failure = 'AKS missing exit'; Error = '*AKS node readiness failed*' }
         @{ Failure = 'AKS state'; Error = '*AKS node readiness failed*' }
@@ -472,6 +473,7 @@ Describe 'Infrastructure-only participant hook' {
     ) {
         switch ($Failure) {
             'K3s' { $script:guestMarker = 'not-ready' }
+            'K3s version' { $script:guestMarker = 'K3S_VERSION_MISMATCH: Existing K3s version v1.37.2+k3s1 does not match required v1.33.13+k3s1. Automatic version changes are not supported. Use a fresh lab VM.' }
             'AKS exit' { $script:aksResult = '{"provisioningState":"Succeeded","exitCode":1}' }
             'AKS missing exit' { $script:aksResult = '{"provisioningState":"Succeeded"}' }
             'AKS state' { $script:aksResult = '{"provisioningState":"Failed","exitCode":0}' }

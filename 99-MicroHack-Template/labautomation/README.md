@@ -11,6 +11,9 @@ optional script, [shared-deploy-lab.ps1](shared-deploy-lab.ps1), runs once per
 subscription *ahead of* that fan-out to lay down whatever the individual labs
 build on. See
 [Optional hook](#optional-hook-shared-deploy-labps1).
+For resources shared across *all* subscriptions in an event, use the opt-in
+[global event hook](#optional-hook-global-event-deployps1), which runs before the
+per-subscription shared hooks.
 
 **One deployment fans out into N identical labs, one per participant.** The
 platform runs *your one script* many times over, in a separate process each
@@ -27,7 +30,10 @@ flowchart TD
     A[Deployment start] --> B[Read lab-defaults.json]
     B --> C["Reserve the event's subscriptions"]
     C --> D["Pre-provision each participant's scope<br/>subscription / resource group<br/>+ user RBAC"]
-    D --> SH["shared-deploy-lab.ps1 (optional)<br/>once per subscription, in parallel<br/>receives all its participants"]
+    D --> GE["global-event-deploy.ps1 (opt-in)<br/>once per event in lowest-GUID subscription<br/>receives all event participants"]
+    GE --> GG{"Global stage<br/>succeeded or not enabled?"}
+    GG -- no --> X
+    GG -- yes --> SH["shared-deploy-lab.ps1 (optional)<br/>once per subscription, in parallel<br/>receives all its participants"]
     SH --> G{"Shared stage<br/>succeeded?"}
     G -- no --> X["No deploy-lab.ps1 runs at all<br/>deployment marked failed"]
 
@@ -43,6 +49,7 @@ flowchart TD
     G -- yes --> LN
 
     SH -. HackboxCredential for every lab in that subscription .-> CR
+    GE -. HackboxCredential for every lab in the event .-> CR
     L1 -. HackboxCredential .-> CR
     L2 -. HackboxCredential .-> CR
     LN -. HackboxCredential .-> CR
@@ -82,6 +89,7 @@ Key points for integration:
   - [`lab-defaults.json`](#lab-defaultsjson)
     - [Fields](#fields)
     - [Cost forecasting formula](#cost-forecasting-formula)
+    - [`contentPreparation`: how your content is prepared](#contentpreparation-how-your-content-is-prepared)
     - [`groups`: supported values](#groups-supported-values)
     - [`deploymentType`: what each value means for your script](#deploymenttype-what-each-value-means-for-your-script)
   - [`deploy-lab.ps1`](#deploy-labps1)
@@ -94,6 +102,7 @@ Key points for integration:
       - [Passwords and re-runs](#passwords-and-re-runs)
     - [Cleaning up](#cleaning-up)
     - [Local testing](#local-testing)
+  - [Optional hook: `global-event-deploy.ps1`](#optional-hook-global-event-deployps1)
   - [Optional hook: `shared-deploy-lab.ps1`](#optional-hook-shared-deploy-labps1)
     - [Where it fits in the pipeline](#where-it-fits-in-the-pipeline)
     - [Shared hook parameter contract](#shared-hook-parameter-contract)
@@ -121,6 +130,7 @@ Key points for integration:
 ```text
 labautomation/
 ├── lab-defaults.json        # Platform-facing configuration (required if folder exists)
+├── global-event-deploy.ps1  # Opt-in: once per event, before the shared hooks
 ├── shared-deploy-lab.ps1    # Optional: runs once per subscription, before the labs
 ├── deploy-lab.ps1           # Optional: per-user Azure deployment script
 ├── main.bicep               # Optional: Bicep/ARM template your script deploys  (Recommended)
@@ -131,6 +141,8 @@ labautomation/
 automatically by file name, no registration step is required. Anything else in
 the folder is yours; reference it from your script with
 `Join-Path $PSScriptRoot '<name>'`.
+The global event hook additionally requires the cost opt-in described below;
+re-import the content pack after adding or enabling it.
 
 ## `lab-defaults.json`
 
@@ -163,6 +175,9 @@ Only include fields you want to set; missing fields fall back to platform defaul
 | `preferredLocation` | `string` | Comma-separated Azure regions, **in priority order** (e.g. `"swedencentral, norwayeast"`). The first region is used as the default deployment location. List multiple regions so your script can fall back if the first region doesn't support every service your lab needs; see [authoring guidelines](#authoring-guidelines). |
 | `estimatedDailyCostsUsd` | `number` (≥ 0) | Estimated daily cost per lab environment in USD. Based on the resources created by `deploy-lab.ps1`. Used for cost forecasting in the lab lifecycle wizard. |
 | `estimatedSharedDeploymentDailyCostsUsd` | `number` (≥ 0) | Estimated daily cost in USD of resources created once per subscription by `shared-deploy-lab.ps1`. Cost forecasting multiplies this value by the subscription count: labs divided by `labsPerSubscription`, rounded up, for resource-group deployments; one subscription per lab for `subscription` deployments. Defaults to `0` when absent. |
+| `estimatedGlobalDeploymentDailyCostsUsd` | `number` (≥ 0) | Estimated daily cost in USD of resources created once per event by `global-event-deploy.ps1`, not multiplied by subscription count. Must be **greater than 5**, with a matching hook signature, to enable global deployment. |
+| `Quality` | `"Testing"` \| `"Preview"` \| `"GA"` | **Optional** maturity label of the MicroHack.<ul><li><strong>Testing</strong>: in development and not intended for use.</li><li><strong>Preview</strong>: available for use by early adopters who accept potential issues.</li><li><strong>GA</strong>: generally available for public use.</li></ul> |
+| `contentPreparation` | `object` | **Optional.** Controls how the platform prepares your content on import and re-import: variants, removed or renamed files, download ZIP contents and banners. See [details](#contentpreparation-how-your-content-is-prepared). |
 
 ### Cost forecasting formula
 
@@ -185,6 +200,7 @@ The final estimated cost in USD is:
 \underbrace{\left(\text{estimatedDailyCostsUsd} + \textstyle\sum \text{groupSurcharge}\right)}_{\text{per-lab}}
 + \text{subs} \times
 \underbrace{\text{estimatedSharedDeploymentDailyCostsUsd}}_{\text{per-subscription}}
++ \underbrace{\text{estimatedGlobalDeploymentDailyCostsUsd}}_{\text{per-event, when enabled}}
 \right)
 ```
 
@@ -192,6 +208,179 @@ Here, `labs` is the number of lab environments, `days` is the deployment duratio
 and $\sum \text{groupSurcharge}$ represents the license costs for `groups` per lab.
 Per-lab costs and group surcharges are multiplied by `labs`; shared deployment costs are multiplied by `subs`
 because `shared-deploy-lab.ps1` runs once per subscription.
+Enabled global deployment costs are added once per day for the whole event.
+
+### `contentPreparation`: how your content is prepared
+
+When someone imports or re-imports your MicroHack, the platform prepares it before
+publishing. It applies the selected variant, removes files or folders, renames Markdown
+files, builds `download-Student.zip` and `download-Coach.zip`, and adds banners to the
+first challenge and the first solution. The optional `contentPreparation` object puts
+you in control of each step:
+
+```json
+{
+  "contentPreparation": {
+    "variants": ["Standard", "Accelerated"],
+    "defaultVariant": "Standard",
+    "alwaysRemove": {
+      "challenges": [],
+      "solutions": []
+    },
+    "variantRemovals": {
+      "Accelerated": ["Challenge-02.md", "Solution-02.md"]
+    },
+    "variantRenames": {},
+    "studentZipExclusions": ["img"],
+    "coachZipExclusions": ["img"],
+    "banners": {
+      "challenges": {
+        "download": true,
+        "parentReadme": false
+      },
+      "solutions": {
+        "download": true,
+        "parentReadme": true
+      }
+    }
+  }
+}
+```
+
+- **Start small:** this example shows every option. Each is optional; add only the ones
+  you need. A supplied option replaces that option's platform default. An empty list or
+  object clears the default.
+- **Defaults:** most MicroHacks have no variants, removals, renames or ZIP exclusions;
+  all four banners are on.
+- **Location:** for the platform to read `contentPreparation`, put `lab-defaults.json`
+  next to `deploy-lab.ps1`.
+
+#### Options
+
+| Option | Type | What it does |
+| --- | --- | --- |
+| `variants` | `string[]` | Variants offered during import, for example a full and an accelerated version. Use letters, digits, spaces, `.`, `_` and `-`. |
+| `defaultVariant` | `string` | Variant preselected on import. Must be one of `variants`. Without it, the platform default is used if offered; otherwise the first variant. |
+| `alwaysRemove` | `{ "challenges": [], "solutions": [] }` | Files of any type or folders, removed on every import, whatever the variant: `challenges` from the student side, `solutions` from the coach side. No other keys. |
+| `variantRemovals` | `{ "<variant>": [] }` | Markdown files (`.md`) removed from both sides when that variant is imported. Folders are not matched. |
+| `variantRenames` | `{ "<variant>": { "<file>.md": "<new name>.md" } }` | Markdown files renamed to another `.md` name on both sides when that variant is imported. See [Renames](#renames). |
+| `studentZipExclusions` | `string[]` | Left out of `download-Student.zip`. See [Download ZIPs](#download-zips). |
+| `coachZipExclusions` | `string[]` | Left out of `download-Coach.zip`. |
+| `banners` | `object` | Turns each of the four banners on or off. See [Banners](#banners). |
+
+Variants used as keys in `variantRemovals` and `variantRenames` must be listed in
+`variants`, spelled exactly the same. A re-import keeps the variant picked at import as
+long as it is still listed; otherwise it uses `defaultVariant`.
+
+Use `alwaysRemove` for images, scripts or folders; variant-specific removals and renames
+are for Markdown files only.
+
+#### Where paths start
+
+Every path starts at your MicroHack folder, the one that contains `challenges/` and
+`walkthrough/`. The examples below use this layout:
+
+```text
+01-My-MicroHack/                  ← paths start here
+├── Readme.md
+├── img/
+├── challenges/Challenge-02.md
+├── challenges/img/
+├── walkthrough/Solution-02.md
+└── labautomation/
+```
+
+The platform prepares two copies of this folder:
+
+- **Student side**, published as the challenges: your folder **without** `walkthrough/`.
+- **Coach side**, published as the solutions: your folder **without** `challenges/`.
+
+Shared entries such as `Readme.md` and `img/` are on both sides. `labautomation/` and
+its files are on neither.
+
+#### How a value finds its target
+
+A value is either a **name** (no `/`) or a **path** (with `/`):
+
+| You write | Removals and renames | ZIP exclusions |
+| --- | --- | --- |
+| Name: `Challenge-02.md` | The first entry with exactly this name, searched from the top down, level by level, on each side. Only that one entry. | The entry with this name at the top of the ZIP. No search. |
+| Path: `challenges/Challenge-02.md` | Exactly this path from your MicroHack folder. | Exactly this path from the top of the ZIP. |
+
+Matching is always exact and case-sensitive: no "ends with", no partial names, no
+wildcards. `challenge-02.md` does not match `Challenge-02.md`. The `.md` extension
+check itself ignores case, but the file name must still match exactly.
+
+Applied to the layout above:
+
+| Option | Value | Hits |
+| --- | --- | --- |
+| `variantRemovals` | `Challenge-02.md` | `challenges/Challenge-02.md`. Nothing on the coach side. |
+| `variantRemovals` | `Solution-02.md` | `walkthrough/Solution-02.md`. Nothing on the student side. |
+| `studentZipExclusions` | `img` | The top-level `img/`. `challenges/img/` stays in the ZIP. |
+| `studentZipExclusions` | `challenges/img` | `challenges/img/` only. |
+
+**Rule of thumb:** a path with `/` means the same thing in every option and never hits
+the wrong entry. Use a bare name only when it is unique.
+
+#### Renames
+
+`variantRenames` renames a file for one variant:
+
+- The key finds the source file the same way a removal finds it (name or path).
+- The value is the new file name only, without `/`; the file stays in its folder.
+- An existing file with that name is replaced.
+- Renames run after removals. When renames depend on each other, such as `03 → 02` and
+  `04 → 03`, the platform runs them in the right order, whatever their order in the file.
+- Links to the old name in your Markdown are not updated.
+
+Example: the `Accelerated` variant skips challenge 2 and moves challenge 3 into its place,
+so the numbering has no gap:
+
+```json
+"variantRemovals": {
+  "Accelerated": ["challenges/Challenge-02.md", "walkthrough/Solution-02.md"]
+},
+"variantRenames": {
+  "Accelerated": {
+    "challenges/Challenge-03.md": "Challenge-02.md",
+    "walkthrough/Solution-03.md": "Solution-02.md"
+  }
+}
+```
+
+#### Download ZIPs
+
+The ZIP root is your MicroHack folder. The Student ZIP omits `.md` files in
+`challenges/`; the Coach ZIP omits `.md` files in `walkthrough/`. Top-level files such
+as `Readme.md` are not included. Removals and renames only change published pages; use
+`studentZipExclusions` and `coachZipExclusions` to change ZIP contents.
+
+#### Banners
+
+| Setting | Added to | Banner |
+| --- | --- | --- |
+| `challenges.download` | First challenge | `[!IMPORTANT]` box asking to download `download-Student.zip`, with a link. |
+| `challenges.parentReadme` | First challenge | `[!TIP]` box pointing to the `Readme.md` of your MicroHack. |
+| `solutions.download` | First solution | `[!IMPORTANT]` box asking to download `download-Coach.zip`, with a link. |
+| `solutions.parentReadme` | First solution | `[!TIP]` box pointing to the `Readme.md` of your MicroHack. |
+
+All four default to `true`; leave one out to keep its default. Banners go right below the
+title. A `parentReadme` banner needs a `Readme.md` in your MicroHack folder. Nothing worth
+downloading on one side? Turn its `download` banner off.
+
+#### Path rules and errors
+
+Every value must be a plain relative path:
+
+- Use `/` between folders. Paths are literal: no wildcards, absolute paths or `..`.
+- Paths stay inside the content folder and cannot traverse symbolic links.
+
+What happens when something is off:
+
+- **A value finds nothing:** it is skipped.
+- **An invalid value, unknown option or wrong type:** the import fails with an error.
+  The already published version stays online.
 
 ### `groups`: supported values
 
@@ -531,6 +720,17 @@ Rules:
   `Resource Group Name`, `Entra ID *`, `Portal URL *`) and emits them itself.
   Attempts to emit a reserved name are silently dropped.
 
+#### Using emitted credentials in Markdown content
+
+Emitted credentials can also be used when rendering Markdown content.
+All `challenge*.md` and `solution*.md` pages support:
+
+- Secret rendering from the console: `<secret group="groupname" name="secretname" show="true|false|alwayshidden|always" />`
+- GitHub flavoured Markdown
+- Math rendering via KaTeX
+- Mermaid diagrams
+- Syntax highlighting of code blocks
+
 #### Passwords and re-runs
 
 A credential is stored the moment you emit it, and the participant may already
@@ -632,6 +832,34 @@ required parameters from the [contract](#required-parameter-contract):
 > `Update-MhhToken`, `Invoke-MhhTofuCommand`, …) are simplified local-dev stand-ins.
 > They are not identical to the platform versions, but they are sufficient for
 > testing your script logic and parameter contract.
+
+## Optional hook: `global-event-deploy.ps1`
+
+Place this file beside `deploy-lab.ps1` in the content pack's lab folder using
+exactly this parameter contract:
+
+```powershell
+param(
+    [Parameter(Mandatory=$true)] [string]$SubscriptionId,
+    [Parameter(Mandatory=$true)] [string[]]$PreferredLocation = @(),
+    [Parameter(Mandatory=$false)] [string[]]$AllowedEntraUserIds = @()
+)
+```
+
+Set `estimatedGlobalDeploymentDailyCostsUsd` in `lab-defaults.json` to a value
+**greater than 5**, then **re-import the content pack**. If the signature does not
+match or the cost is 5 or less, the Console skips the hook and logs a warning.
+
+The Console runs it **once per event**, in the event's **lowest-GUID
+subscription**, with **all event lab-user object IDs**. It must finish before
+any `shared-deploy-lab.ps1` invocation. Failure stops the entire lab deployment.
+The hook does not pick a different subscription based on regional quota.
+
+Every `HackboxCredential` it outputs is delivered to **every lab user in the
+event**. Publish nonsecret resource IDs for discovery across subscriptions; do not
+publish organizer-only credentials. Grant the needed shared-resource permissions
+to all intended users, preserve safe reruns, and remove the same resource creation
+from the per-subscription hook to avoid deploying duplicate infrastructure.
 
 ## Optional hook: `shared-deploy-lab.ps1`
 
@@ -791,8 +1019,11 @@ as in [Local testing](#local-testing); only the invocation differs:
 
 Pass `-PreferredLocation` as a comma-separated string or as an array, matching
 however you declared it. Run the scripts in the real order —
-`shared-deploy-lab.ps1` first, then `deploy-lab.ps1` — if you want to reproduce
-what the platform does. Pass more than one object ID to `-AllowedEntraUserIds`
+`global-event-deploy.ps1` once when enabled, then `shared-deploy-lab.ps1` per
+subscription, then `deploy-lab.ps1` per lab — if you want to reproduce
+what the platform does. Use the global host context and all event users for the
+global hook; use each subscription's context and users for its shared hook.
+Pass more than one object ID to `-AllowedEntraUserIds`
 to check that your RBAC really covers every participant.
 
 ## Available helper cmdlets
@@ -1503,5 +1734,3 @@ resource names unique inside the subscription.
 - **Do not call `Connect-AzAccount`, `Set-AzContext` or `az login`.** The platform
   manages authentication and subscription context, and keeps each lab's Azure
   CLI login isolated for you.
-
-

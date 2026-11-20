@@ -1,6 +1,23 @@
 # LocalBox post-provisioning preparation
 
-Run [prepare-localbox.ps1](../prepare-localbox.ps1) **inside LocalBox-Client**, after Jumpstart has finished deploying the nested Azure Local cluster. This is common to hosted and manual delivery. It does not deploy a new LocalBox or replace the existing Azure AKS/K3s labs.
+Run [prepare-localbox.ps1](../prepare-localbox.ps1) **inside LocalBox-Client**, after Jumpstart has finished deploying the nested Azure Local cluster. Hosted Console events now [invoke it automatically](../hosted-events/readme.md#complete-localbox-preparation), with AKS and the reference VM enabled, then run infrastructure health checks. The instructions below are for manual/BYOS delivery and deliberate recovery; do not run preparation concurrently with the hosted job. The script does not deploy a new LocalBox or replace the existing Azure AKS/K3s labs.
+
+## Preparation time
+
+In a test run reported on **25 October 2026**, PowerShell history recorded
+**4 hours 24 minutes 26 seconds** for `./prepare-localbox.ps1`, including the
+default reference VM. This is the observed duration of the whole preparation
+command, not an image-download or reference-VM-only measurement, and not a
+guaranteed runtime.
+
+<a href="./img/preparation-duration-test4.png"><img src="./img/preparation-duration-test4.png" alt="PowerShell history showing prepare-localbox.ps1 completed in 4:24:26.111, with the reference VM Running, Arc Connected and MDE Pending." width="800" /></a>
+
+Budget this post-provisioning work **in addition to** the initial LocalBox and
+nested Azure Local deployment. At preparation completion, the reference VM was
+**Running**, **Arc Connected**, and **MDE Pending**; health checks and Defender/
+Update Manager readiness still had to be verified separately. Start provisioning
+at least **24 hours before the event**, complete preparation the day before, and
+verify readiness rather than treating the elapsed time as a guarantee.
 
 ## Prerequisites
 
@@ -34,9 +51,11 @@ If the nested account was rotated, pass a current `PSCredential` through `-NodeC
 
 The script prompts for the Entra group object ID, or accepts `-AksAdminGroupObjectId`. Subscription, resource group and configuration path default from Jumpstart's machine environment. Explicit scope values must match this Client's deployment. Run only one preparation session at a time.
 
-The reference VM is **enabled by default**; pass `-IncludeReferenceVm:$false` to skip its preparation. Operation confirmation prompts are off under PowerShell's default confirmation preference, including storage changes and recovery of a matching Failed image. Use `-Confirm` to request confirmations, or `-Confirm:$false` if your session has a stricter preference. `-WhatIf` and all configuration/health safety checks remain active. Group-ID and first-creation credential prompts are separate; supply `-AksAdminGroupObjectId` and `-ReferenceVmCredential` to avoid those inputs.
+The reference VM is **enabled by default**; pass `-IncludeReferenceVm:$false` to skip its preparation. Operation confirmation prompts are off under PowerShell's default confirmation preference, including storage changes and recovery of a matching Failed image. Use `-Confirm` to request confirmations, or `-Confirm:$false` if your session has a stricter preference. `-WhatIf` and all configuration/health safety checks remain active. Supply `-AksAdminGroupObjectId` to avoid the group-ID prompt; reference-VM credentials are generated without prompting.
 
-Preparation runs in this order: **storage -> logical networks -> AKS, proxy access and MetalLB -> VM image -> reference VM (unless disabled)**. A late Marketplace image failure therefore leaves the networks and AKS resources in place for the next run to reuse; it does not roll them back. The final manifest is written only after the requested preparation finishes.
+Preparation starts with **storage -> logical networks**. By default, a new AKS cluster is validated and submitted asynchronously so its provisioning overlaps the Windows VM image import. After image completion, preparation requires AKS readiness, proxy access and MetalLB before creating the reference VM (unless disabled). Matching accepted/running AKS deployments can also overlap image import on resume; completed or legacy existing clusters retain verification-before-image ordering.
+
+Use `-SequentialProvisioning` for manual preparation to restore **AKS, proxy access and MetalLB -> VM image -> reference VM** ordering if contention is suspected. An image failure does not roll back earlier resources, and an asynchronously submitted AKS deployment may continue in Azure. Inspect both states before retrying. The final manifest is written only after the requested preparation finishes.
 
 If the Console-owned group is not available yet, `-SkipAks` prepares storage, both networks, the VM image and the reference VM (unless disabled). It does not fabricate a group or grant anyone cluster access. The manifest records this as a partial run, and full health checks fail until preparation is rerun without `-SkipAks` using a valid admin-group ID.
 
@@ -75,10 +94,11 @@ There is **one import attempt per run**, not an endless retry loop. If the new a
 
 ## MetalLB preparation
 
-MetalLB is installed automatically **after AKS is ready**, by this organizer
-preparation script, not by participants. The Console shared hook still deploys
-LocalBox only; it registers the Runtime provider and supplies the object-ID tag
-needed for this later step. No Client VM access is granted to attendees.
+MetalLB is installed automatically **after AKS is ready**, by this preparation
+script, not by participants. The Console global event hook registers the Runtime
+provider, supplies the object-ID tag, deploys/reuses LocalBox and invokes this
+script inside the Client before running infrastructure health checks. Manual
+organizers invoke the script themselves. No Client VM access is granted to attendees.
 
 The script uses ARM APIs for the extension and load-balancer pool, without
 adding CLI extensions or querying Microsoft Graph as the Client managed identity.
@@ -155,11 +175,13 @@ On an **existing LocalBox**, copy the updated [prepare-localbox.ps1](../prepare-
 
 Supply the existing AKS group ID when prompted, or pass `-AksAdminGroupObjectId`. Preserve any original nondefault image/network/AKS settings. This is an idempotent preparation rerun, **not** a new LocalBox deployment. It still validates/reconciles the normal shared resources; do not use `-SkipAks` just to bypass those checks.
 
-Creation prompts for a **separate local administrator credential**, not the nested domain administrator. Retain it securely for organizer maintenance; alternatively supply `-ReferenceVmCredential (Get-Credential -UserName 'localadmin')`. The password is passed through a restricted temporary ARM parameter file, never through CLI arguments or the manifest, and the file is removed after submission. Do not share the credential with participants.
+First creation automatically generates a strong random password for **`localadmin`**, separate from the nested domain administrator, and saves the credential to `C:\LocalBox\credentials\sov-ref-vm\credential.clixml` on LocalBox-Client **before** submitting the VM. The file uses Windows DPAPI encryption in a restricted directory; decryption requires the same Windows account on the same Client. A creation retry reuses this saved credential, rather than rotating it. Unreadable files or records for a different resource stop creation without replacing the saved credential.
+
+No password input is needed. For an explicit organizer-managed credential, supply `-ReferenceVmCredential`; supplied credentials are not saved automatically. The password is passed through a restricted temporary ARM parameter file, never through CLI arguments, logs or the manifest, and that temporary file is removed after submission. Do not share the credential with participants.
 
 The script requests guest management and **periodic update assessment** (`AutomaticByPlatform`); it does not install patches, toggle Defender or force MDE installation. Defender for Servers P2 and Endpoint protection must already be enabled, and the VM needs outbound access to Arc, Defender and its configured update source. Resources carry `SecurityControl=Ignore`, `CostControl=Ignore` and `MicroHackPurpose=LocalBoxReferenceVM`.
 
-Matching resources are reused without password resets, resizing or redeployment. Conflicting/partial resources cause an explicit failure for organizer inspection; they are never deleted or overwritten. Reruns with `-IncludeReferenceVm:$false` neither manage nor delete the VM, and preserve its existing manifest entry (including the original observation timestamp).
+Matching resources are reused without password resets, resizing or redeployment. Reusing an existing VM does not create a credential file: its original password remains unchanged. WhatIf and opt-out also leave credential storage untouched. NIC validation checks the subnet and single IP configuration, without requiring the optional IP-configuration name that Azure Local can omit from responses. Rerun preparation to refresh the manifest after the older `Missing resource.properties.ipConfigurations[0].name` error; do not delete the running VM. Conflicting/partial resources cause an explicit failure for organizer inspection; they are never deleted or overwritten. Reruns with `-IncludeReferenceVm:$false` neither manage nor delete the VM, and preserve its existing manifest entry (including the original observation timestamp).
 
 ### Reference readiness and participant use
 
@@ -172,7 +194,25 @@ Before the workshop, verify:
 3. Defender for Cloud has assessment evidence for this VM. Review available recommendations or a completed assessment with no findings; an empty list alone is not sufficient.
 4. Azure Update Manager shows a **successful assessment and timestamp**. Periodic assessment is asynchronous; an organizer can run **Check for updates** on this VM if no result is available yet. Do not install patches just to prepare the demonstration.
 
-The script intentionally leaves Defender assessment and update-result readiness as `NotVerified`; these portal checks remain required even after automated health tests pass. See the [Defender readiness checklist](manual-preparation.md#defender-for-servers-readiness-organizer).
+Standalone `prepare-localbox.ps1` intentionally leaves Defender assessment and update-result readiness as `NotVerified`; its manifest is not a completed health report. For hosted events, the [automation wrapper](../hosted-events/readme.md#complete-localbox-preparation) additionally waits for the VM to be Running, Arc Connected and MDE Succeeded, then requests an Update Manager assessment and requires success with a timestamp before Full health checks. Use that run's status and health reports for the hosted result, not the preparation snapshot alone.
+
+Neither path proves actual Defender device reporting or Defender for Cloud assessment visibility. Those portal checks and real participant access remain required even after the hosted gate succeeds. See the [Defender readiness checklist](manual-preparation.md#defender-for-servers-readiness-organizer).
+
+The following examples show three separate readiness milestones on `sov-ref-vm`.
+
+<a href="./img/reference-vm-mde-extension.png"><img src="./img/reference-vm-mde-extension.png" alt="sov-ref-vm Extensions page showing MDE.Windows with provisioning status Succeeded." width="800" /></a>
+
+**Extension installation:** `MDE.Windows` shows **Succeeded** after automatic provisioning. Installation is asynchronous and may finish after the preparation script. This confirms successful extension installation, not ongoing Defender device reporting or completed security/update assessments.
+
+<a href="./img/reference-vm-defender-recommendations.png"><img src="./img/reference-vm-defender-recommendations.png" alt="sov-ref-vm Security page showing Defender for Servers On, zero security alerts, and a populated recommendations table with 153 results." width="800" /></a>
+
+**Populated security findings:** the reference VM's Security page shows **Microsoft Defender for Servers On**, **153 recommendation results** and **zero security alerts**. Recommendations identify configuration or security improvements; they are not the same as threat alerts. The count and findings are examples, not a required lab outcome, and this view does not prove that every assessment has completed or that Update Manager has assessed the VM.
+
+The successful extension screenshot was shared on **21 October 2026**, and populated recommendations were observed the following morning, **22 October**. These are observation times, not a measured processing duration: the findings may have appeared earlier between checks. Prepare the reference VM the day before the event and verify the checklist rather than assuming a fixed wait guarantees readiness.
+
+<a href="./img/reference-vm-update-assessment.png"><img src="./img/reference-vm-update-assessment.png" alt="sov-ref-vm Updates page showing periodic assessment enabled, five available updates comprising zero critical, two security and three other updates, and a last-assessed timestamp." width="800" /></a>
+
+**Update assessment results:** the Updates page shows **Periodic assessment: Yes** and **5 available updates**: **0 critical**, **2 security** and **3 other**. The displayed **Last assessed: 22/10/2026, 08:03:46** provides a timestamp for the results; the screenshot does not identify its time zone. Counts and available updates vary with the image and assessment date. These are assessment results, not evidence that updates were installed or that automatic patch installation is configured. Inspect **History** to confirm the assessment status if needed; participants must not install or schedule updates on the shared reference VM.
 
 Participants still create and assess **their own VM**. While waiting, they may inspect this reference VM's existing security and update results. **Do not modify, assess, patch, restart, remediate or delete the shared reference VM.** This is an instruction, **not an RBAC-enforced read-only boundary**: existing shared resource-group VM Contributor grants remain unchanged. Verify participant visibility before the event; do not grant access to LocalBox-Client or publish the reference administrator credential.
 
@@ -184,7 +224,7 @@ If existing workloads use the secondary volume, do not remove it. Use the [manua
 
 ## Verify readiness
 
-Follow [Pester health checks](../tests/readme.md). Provisioning success is not a health verdict. The nonsecret manifest intentionally records `FullHealthVerified = false`.
+For hosted events, inspect the [run-correlated automation results](../hosted-events/readme.md#complete-localbox-preparation); Console runs upstream and Full LocalBox health checks automatically. For manual delivery or deliberate diagnostics, follow [Pester health checks](../tests/readme.md). Provisioning success is not a health verdict. The preparation manifest intentionally records `FullHealthVerified = false`; a successful hosted health report is separate evidence and does not rewrite that snapshot.
 
 For AKS runtime access, follow [Jumpstart's AKS guide](https://jumpstart.azure.com/azure_jumpstart_localbox/AKS): use a separate CLI profile/session authenticated as a group member, and keep `az connectedk8s proxy` running with the kubeconfig used for health checks (default `$HOME/.kube/config`). Do not log out the provisioning identity or give its managed identity broader permissions to run tests.
 
